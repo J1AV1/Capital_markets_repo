@@ -44,9 +44,9 @@ def data_update_yf(symbols, file_path):
     print("Archivo all_historical_data.csv actualizado.")
     print("Actualización completa.")
 
-    # # Ejemplo de uso
-    # symbols = ["AXP", "EQR", "GOOG", "IWM", "JPM", "KO", "NDAQ", "NVDA", "TQQQ", "UBER", "WMT", "SPY"]
-    # file_path = r"C:\Users\jalpi\git_repos\Portfolio\data"
+#Ejemplo de uso
+symbols = ["AXP", "EQR", "GOOG", "IWM", "JPM", "KO", "NDAQ", "NVDA", "TQQQ", "UBER", "WMT", "SPY"]
+file_path = r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data"
 
-    # # Llamar a la función para actualizar los datos
-    # data_update_yf(symbols, file_path)
+# # Llamar a la función para actualizar los datos
+data_update_yf(symbols, file_path)

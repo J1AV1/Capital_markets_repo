@@ -4,14 +4,23 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 
-
-
-
-
-
-# def calculate_std_36_dialy(Returns):
-
-#     lambd = (2/(1+36)) 
+def calculate_ewma_std(returns,periods ):
+    """
+    Calculate EWMA standard deviation directly using the recursive variance formula.
+   
+    Parameters:
+    - returns: A numpy array of returns
+    - periods for smoothing
+   
+    Returns:
+    - std_dev: A numpy array of EWMA standard deviation values
+    """
+    lambda_param = (2/(1+periods))
+    ewma_variance = np.zeros(len(returns))
+    ewma_variance[1] = returns[1] ** 2  # Initialize with the square of the first return
+    for t in range(2, len(returns)):
+        ewma_variance[t] = lambda_param * (returns[t] ** 2) + ((1 - lambda_param) * ewma_variance[t - 1])
+    return np.sqrt(ewma_variance)
 
 def calculate_correlation_returns_individual_csv(data):
     """
