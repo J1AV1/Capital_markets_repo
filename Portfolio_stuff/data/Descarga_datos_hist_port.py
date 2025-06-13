@@ -1,24 +1,50 @@
-import yfinance as yf
+from ib_insync import *
 import pandas as pd
+import time
 
-# Lista de símbolos extraídos de la imagen más SPY
+# Conexión con TWS/IB Gateway
+ib = IB()
+ib.connect('127.0.0.1', 7497)  # Asegúrate de que TWS esté ejecutándose
+
+# Lista de símbolos y su tipo de contrato
 symbols = ["AXP", "EQR", "GOOG", "IWM", "JPM",
-            "KO", "NDAQ", "NVDA", "TQQQ", "UBER",
-              "WMT", "SPY"]
+           "KO", "NDAQ", "NVDA", "TQQQ", "UBER",
+           "WMT", "SPY"]
 
-# Definir el período máximo disponible
-data = {}
+data_dict = {}
+
 for symbol in symbols:
-    print(f"Descargando datos para {symbol}...")
-    stock = yf.Ticker(symbol)
-    hist = stock.history(period="max")  # Obtiene la mayor cantidad de datos posibles
-    data[symbol] = hist
+    print(f"Descargando datos de {symbol} desde IBKR...")
+    
+    # Crear contrato de acción en NASDAQ
+    contract = Stock(symbol, 'SMART', 'USD')
+    
+    # Solicitar datos históricos
+    bars = ib.reqHistoricalData(
+        contract,
+        endDateTime='',
+        durationStr='10 Y',
+        barSizeSetting='1 day',
+        whatToShow='TRADES',
+        useRTH=True,
+        formatDate=1
+    )
+    
+    # Convertir a DataFrame y extraer solo Date y Close
+    df = util.df(bars)[["date", "close"]].rename(columns={"date": "Date", "close": "Close"})
+    df.set_index("Date", inplace=True)
+    
+    data_dict[symbol] = df
 
-    # Guardar cada símbolo en un CSV individual
-    hist.to_csv(f"{symbol}_historical_data.csv")
+    # Guardar CSV individual
+    df.to_csv(f"{symbol}_historical_data.csv")
+    
+    time.sleep(1.5)  # Evitar limitaciones de IBKR
 
-# También guardamos todo en un solo archivo consolidado
-all_data = pd.concat(data, names=["Symbol", "Date"])
-all_data.to_csv("all_historical_data.csv")
+# Combinar todos los datos
+all_data = pd.concat(data_dict, names=["Symbol"])
+all_data = all_data.reset_index()
+all_data.to_csv("all_historical_data.csv", index=False)
 
-print("Descarga completa. Datos guardados en archivos CSV.")
+print("✅ Descarga completa desde IBKR.")
+ib.disconnect()
