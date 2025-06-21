@@ -3,6 +3,7 @@ import dash
 from dash import dcc, html, dash_table
 import plotly.express as px
 import datetime
+from Analitic_functions.Util_functions import calculate_ewma_std, calculate_returns
 
 # ===================== VARIABLES PRINCIPALES ===================== #
 holdings_data = {
@@ -17,14 +18,30 @@ spy_file_path = r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data\
 holdings = pd.DataFrame(holdings_data).set_index("Symbol")
 holdings["Total Cost"] = holdings["Quantity"] * holdings["Average Price"]
 
-# Leer y preparar histórico de precios
-all_data = pd.read_csv(file_path, usecols=[0, 1, 2], header=None, names=["Symbol", "Date", "Close"], low_memory=False)
-all_data["Date"] = pd.to_datetime(all_data["Date"].astype(str).str.strip(), format="%Y-%m-%d", errors="coerce")
+all_data = pd.read_csv(
+    file_path,
+    usecols=[0, 1, 2],
+    header=None,
+    names=["Symbol", "Date", "Close"],
+    low_memory=False
+)
+
+# ✅ Normaliza símbolos
+all_data["Symbol"] = all_data["Symbol"].astype(str).str.strip().str.upper()
+
+# ✅ Convierte fechas sin formato forzado
+all_data["Date"] = pd.to_datetime(all_data["Date"], errors="coerce")
 all_data["Close"] = pd.to_numeric(all_data["Close"], errors="coerce")
 
-# Últimos precios por símbolo
-latest_prices = all_data.sort_values(by=["Symbol", "Date"]).groupby("Symbol")["Close"].last()
+# ✅ Filtrar valores válidos
+clean_data = all_data.dropna(subset=["Date", "Close"])
+
+# ✅ Obtener último precio y fecha por símbolo
+latest_prices = clean_data.sort_values(["Symbol", "Date"]).groupby("Symbol")["Close"].last()
+latest_dates = clean_data.sort_values(["Symbol", "Date"]).groupby("Symbol")["Date"].last().dt.strftime("%d %b %Y")
+
 holdings["Last Close"] = holdings.index.map(latest_prices)
+holdings["Last Price Date"] = holdings.index.map(latest_dates)
 holdings["Market Value"] = holdings["Quantity"] * holdings["Last Close"]
 holdings["G/P"] = holdings["Market Value"] - holdings["Total Cost"]
 holdings["% G/P"] = (holdings["G/P"] / holdings["Total Cost"]) * 100
@@ -54,6 +71,26 @@ spy_start_price = spy_data_current_year.sort_values("Date")["Close"].iloc[0] if 
 spy_end_price = spy_data["Close"].iloc[-1] if not spy_data.empty else None
 spy_ytd = ((spy_end_price - spy_start_price) / spy_start_price) * 100 if spy_start_price else None
 
+# ===================== VOLATILIDAD ANUALIZADA ===================== #
+data_by_symbol = {
+    symbol: group.sort_values("Date")[["Date", "Close"]].reset_index(drop=True)
+    for symbol, group in all_data.groupby("Symbol")
+}
+
+returns_df = calculate_returns(data_by_symbol)
+volatilities = {}
+
+for symbol in returns_df.columns:
+    ret_series = returns_df[symbol].dropna().values
+    if len(ret_series) > 32:
+        ewma_std = calculate_ewma_std(ret_series, periods=32)
+        vol_annualized = ewma_std[-1] * 16 * 100
+        volatilities[symbol] = vol_annualized
+    else:
+        volatilities[symbol] = None
+
+holdings["Volatility (%)"] = holdings.index.map(volatilities)
+
 # ===================== GRÁFICO DE COMPARACIÓN YTD ===================== #
 fig_ytd = px.bar(
     x=["Portafolio", "SPY"],
@@ -82,7 +119,9 @@ dashboard.layout = html.Div([
             {"name": "% G/P", "id": "% G/P", "type": "numeric", "format": {"specifier": ".2f"}},
             {"name": "Start Value", "id": "Start Value", "type": "numeric", "format": {"specifier": "$,.2f"}},
             {"name": "Δ USD", "id": "Δ USD", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Δ %", "id": "Δ %", "type": "numeric", "format": {"specifier": ".2f"}}
+            {"name": "Δ %", "id": "Δ %", "type": "numeric", "format": {"specifier": ".2f"}},
+            {"name": "Volatility (%)", "id": "Volatility (%)", "type": "numeric", "format": {"specifier": ".2f"}},
+            {"name": "Last Price Date", "id": "Last Price Date"},
         ],
         data=holdings.reset_index().to_dict("records"),
         style_table={"overflowX": "auto"},

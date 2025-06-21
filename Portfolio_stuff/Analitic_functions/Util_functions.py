@@ -17,10 +17,19 @@ def calculate_ewma_std(returns,periods ):
     """
     lambda_param = (2/(1+periods))
     ewma_variance = np.zeros(len(returns))
-    ewma_variance[1] = returns[1] ** 2  # Initialize with the square of the first return
+    ewma_variance[2] = returns[2] ** 2  # Initialize with the square of the first return
     for t in range(2, len(returns)):
         ewma_variance[t] = lambda_param * (returns[t] ** 2) + ((1 - lambda_param) * ewma_variance[t - 1])
     return np.sqrt(ewma_variance)
+
+def calculate_returns(data):
+
+    retornos = pd.DataFrame()
+        
+    for symbol, df in data.items():
+            retornos[symbol] = df['Close'].pct_change()
+        
+    return retornos 
 
 def calculate_correlation_returns_individual_csv(data):
     """

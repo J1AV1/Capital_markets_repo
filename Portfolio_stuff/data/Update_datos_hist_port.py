@@ -70,7 +70,27 @@ def data_update_csv_ibkr(folder_path, symbols):
 
     ib.disconnect()
     print("🟢 Actualización completa.")
+     
+    # ======= Actualizar archivo consolidado ======= #
+    print("📦 Consolidando todos los CSV en all_historical_data.csv...")
+
+    all_data = []
+    for symbol in symbols:
+        file_path = os.path.join(folder_path, f"{symbol}_historical_data.csv")
+        if os.path.exists(file_path):
+            df = pd.read_csv(file_path)
+            df["Symbol"] = symbol
+            all_data.append(df)
+
+    if all_data:
+        combined_df = pd.concat(all_data)
+        combined_df = combined_df[["Symbol", "Date", "Close"]]  # solo columnas necesarias
+        combined_df.to_csv(os.path.join(folder_path, "all_historical_data.csv"), index=False)
+        print("✅ Archivo all_historical_data.csv actualizado.")
+
 
 # Ejemplo de uso:
-# data_update_csv_ibkr(r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data", ["AXP", "EQR", "GOOG", ...])
+data_update_csv_ibkr(r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data", ["AXP", "EQR", "GOOG", "IWM", "JPM",
+           "KO", "NDAQ", "NVDA", "TQQQ", "UBER",
+           "WMT", "SPY"])
 
