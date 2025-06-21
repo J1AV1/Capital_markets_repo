@@ -11,7 +11,11 @@ def data_update_csv_ibkr(folder_path, symbols):
     :param symbols: Lista de símbolos a actualizar.
     """
     ib = IB()
-    ib.connect('127.0.0.1', 7497, clientId=2)  # Requiere TWS/IB Gateway activo
+    try:
+        ib.connect('127.0.0.1', 7497, clientId=2)
+    except Exception:
+        print("❌ Conexión a terminal fallida.")
+        return
 
     for symbol in symbols:
         file_path = os.path.join(folder_path, f"{symbol}_historical_data.csv")

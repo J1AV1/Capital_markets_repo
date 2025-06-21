@@ -4,6 +4,12 @@ from dash import dcc, html, dash_table
 import plotly.express as px
 import datetime
 from Analitic_functions.Util_functions import calculate_ewma_std, calculate_returns
+from data.Update_datos_hist_port import data_update_csv_ibkr
+
+# ===================== ACTUALIZACION DE DATOS ===================== #
+data_update_csv_ibkr(r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data", ["AXP", "EQR", "GOOG", "IWM", "JPM",
+           "KO", "NDAQ", "NVDA", "TQQQ", "UBER",
+           "WMT", "SPY"])
 
 # ===================== VARIABLES PRINCIPALES ===================== #
 holdings_data = {
@@ -26,17 +32,11 @@ all_data = pd.read_csv(
     low_memory=False
 )
 
-# ✅ Normaliza símbolos
 all_data["Symbol"] = all_data["Symbol"].astype(str).str.strip().str.upper()
-
-# ✅ Convierte fechas sin formato forzado
 all_data["Date"] = pd.to_datetime(all_data["Date"], errors="coerce")
 all_data["Close"] = pd.to_numeric(all_data["Close"], errors="coerce")
-
-# ✅ Filtrar valores válidos
 clean_data = all_data.dropna(subset=["Date", "Close"])
 
-# ✅ Obtener último precio y fecha por símbolo
 latest_prices = clean_data.sort_values(["Symbol", "Date"]).groupby("Symbol")["Close"].last()
 latest_dates = clean_data.sort_values(["Symbol", "Date"]).groupby("Symbol")["Date"].last().dt.strftime("%d %b %Y")
 
@@ -52,8 +52,8 @@ start_of_year = pd.Timestamp(datetime.datetime.now().year, 1, 1)
 first_prices = all_data[all_data["Date"] >= start_of_year].sort_values("Date").dropna()
 first_closes = first_prices.groupby("Symbol")["Close"].first()
 holdings["Start Value"] = holdings["Quantity"] * holdings.index.map(first_closes)
-holdings["Δ USD"] = holdings["Market Value"] - holdings["Start Value"]
-holdings["Δ %"] = (holdings["Δ USD"] / holdings["Start Value"]) * 100
+holdings["\u0394 USD"] = holdings["Market Value"] - holdings["Start Value"]
+holdings["\u0394 %"] = (holdings["\u0394 USD"] / holdings["Start Value"]) * 100
 
 initial_equity = holdings["Start Value"].sum()
 current_equity = holdings["Market Value"].sum()
@@ -91,6 +91,19 @@ for symbol in returns_df.columns:
 
 holdings["Volatility (%)"] = holdings.index.map(volatilities)
 
+# ===================== CÁLCULO TOTALES Y VOLATILIDAD PONDERADA ===================== #
+total_market_value = holdings["Market Value"].sum()
+holdings["Weight"] = holdings["Market Value"] / total_market_value
+holdings["Weighted Volatility"] = holdings["Weight"] * holdings["Volatility (%)"]
+portfolio_volatility = holdings["Weighted Volatility"].sum()
+
+# ===================== VOLATILIDAD SPY ===================== #
+spy_returns = spy_data["Close"].pct_change().dropna().values
+spy_volatility = None
+if len(spy_returns) > 32:
+    spy_vol_ewma = calculate_ewma_std(spy_returns, periods=32)
+    spy_volatility = spy_vol_ewma[-1] * 16 * 100
+
 # ===================== GRÁFICO DE COMPARACIÓN YTD ===================== #
 fig_ytd = px.bar(
     x=["Portafolio", "SPY"],
@@ -122,6 +135,8 @@ dashboard.layout = html.Div([
             {"name": "Δ %", "id": "Δ %", "type": "numeric", "format": {"specifier": ".2f"}},
             {"name": "Volatility (%)", "id": "Volatility (%)", "type": "numeric", "format": {"specifier": ".2f"}},
             {"name": "Last Price Date", "id": "Last Price Date"},
+            {"name": "Weight", "id": "Weight", "type": "numeric", "format": {"specifier": ".2%"}},
+            {"name": "Weighted Volatility", "id": "Weighted Volatility", "type": "numeric", "format": {"specifier": ".2f"}},
         ],
         data=holdings.reset_index().to_dict("records"),
         style_table={"overflowX": "auto"},
@@ -130,6 +145,8 @@ dashboard.layout = html.Div([
     html.H3("Métricas del Portafolio"),
     html.P(f"Total Open: ${total_gp:,.2f}"),
     html.P(f"Rendimiento YTD del Portafolio: {portfolio_ytd:.2f}%"),
+    html.P(f"Volatilidad Ponderada del Portafolio: {portfolio_volatility:.2f}%"),
+    html.P(f"Volatilidad del SPY: {spy_volatility:.2f}%" if spy_volatility is not None else "Volatilidad del SPY no disponible"),
 
     dcc.Graph(figure=fig_ytd)
 ])
