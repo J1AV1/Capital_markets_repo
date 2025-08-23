@@ -4,7 +4,7 @@ import time
 
 # Conexión con TWS/IB Gateway
 ib = IB()
-ib.connect('127.0.0.1', 7497)  # Asegúrate de que TWS esté ejecutándose
+ib.connect('127.0.0.1', 7496)  # Asegúrate de que TWS esté ejecutándose
 
 # Lista de símbolos y su tipo de contrato
 symbols = ["AXP", "EQR", "GOOG", "IWM", "JPM",
@@ -31,7 +31,8 @@ for symbol in symbols:
     )
     
     # Convertir a DataFrame y extraer solo Date y Close
-    df = util.df(bars)[["date", "close"]].rename(columns={"date": "Date", "close": "Close"})
+    df = util.df(bars)[["date", "open","high","low","close", "volume"]].rename(columns={"date": "Date", "open":"Open", "high":"High",
+                                                                                         "close": "Close", "volume":"Volume"})
     df.set_index("Date", inplace=True)
     
     data_dict[symbol] = df

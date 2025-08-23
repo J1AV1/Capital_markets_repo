@@ -2,14 +2,23 @@ import pandas as pd
 import dash
 from dash import dcc, html, dash_table
 import plotly.express as px
+import plotly.figure_factory as ff
 import datetime
-from Analitic_functions.Util_functions import calculate_ewma_std, calculate_returns
-from data.Update_datos_hist_port import data_update_csv_ibkr
+from Analitic_functions.Util_functions import calculate_ewma_std, calculate_returns, calculate_correlation_returns_all_instruments_csv
+from data.update_data import update_ibkr_csvs_and_consolidate
 
 # ===================== ACTUALIZACION DE DATOS ===================== #
-data_update_csv_ibkr(r"C:\Users\jalpi\git_repos\Capital_markets\Portfolio_stuff\data", ["AXP", "EQR", "GOOG", "IWM", "JPM",
-           "KO", "NDAQ", "NVDA", "TQQQ", "UBER",
-           "WMT", "SPY"])
+update_ibkr_csvs_and_consolidate(
+    csv_dir="Portfolio_stuff/data",
+    host="127.0.0.1",
+    port=7496,
+    client_id=43,
+    min_days_fetch=30,
+    bar_size="1 day",
+    what_to_show="TRADES",
+    use_rth=True,
+    sleep_between=3.0,
+)
 
 # ===================== VARIABLES PRINCIPALES ===================== #
 holdings_data = {
@@ -51,16 +60,16 @@ total_gp = holdings["G/P"].sum()
 start_of_year = pd.Timestamp(datetime.datetime.now().year, 1, 1)
 first_prices = all_data[all_data["Date"] >= start_of_year].sort_values("Date").dropna()
 first_closes = first_prices.groupby("Symbol")["Close"].first()
-holdings["Start Value"] = holdings["Quantity"] * holdings.index.map(first_closes)
-holdings["\u0394 USD"] = holdings["Market Value"] - holdings["Start Value"]
-holdings["\u0394 %"] = (holdings["\u0394 USD"] / holdings["Start Value"]) * 100
+holdings["Start Value YTD"] = holdings["Quantity"] * holdings.index.map(first_closes)
+holdings["\u0394 USD YTD"] = holdings["Market Value"] - holdings["Start Value YTD"]
+holdings["\u0394 % YTD"] = (holdings["\u0394 USD YTD"] / holdings["Start Value YTD"]) * 100
 
-initial_equity = holdings["Start Value"].sum()
+initial_equity = holdings["Start Value YTD"].sum()
 current_equity = holdings["Market Value"].sum()
 portfolio_ytd = ((current_equity - initial_equity) / initial_equity) * 100
 
 # ===================== BENCHMARK: SPY ===================== #
-spy_data = pd.read_csv(spy_file_path, usecols=[0, 1], header=None, names=["Date", "Close"], low_memory=False)
+spy_data = pd.read_csv(spy_file_path, usecols=[0, 4], header=None, names=["Date", "Close"], low_memory=False)
 spy_data["Date"] = spy_data["Date"].astype(str).str.strip().str[:10]
 spy_data["Date"] = pd.to_datetime(spy_data["Date"], format="%Y-%m-%d", errors="coerce")
 spy_data["Close"] = pd.to_numeric(spy_data["Close"], errors="coerce")
@@ -97,6 +106,11 @@ holdings["Weight"] = holdings["Market Value"] / total_market_value
 holdings["Weighted Volatility"] = holdings["Weight"] * holdings["Volatility (%)"]
 portfolio_volatility = holdings["Weighted Volatility"].sum()
 
+# ===================== SHARPE RATIO ===================== #
+rf_annual = 0.04
+excess_return_annual = portfolio_ytd - (rf_annual * 100)
+sharpe_ratio = excess_return_annual / portfolio_volatility if portfolio_volatility else None
+
 # ===================== VOLATILIDAD SPY ===================== #
 spy_returns = spy_data["Close"].pct_change().dropna().values
 spy_volatility = None
@@ -114,6 +128,37 @@ fig_ytd = px.bar(
     text=[f"{portfolio_ytd:.2f}%", f"{spy_ytd:.2f}%" if spy_ytd is not None else "N/A"]
 )
 
+
+# ===================== MATRIZ DE CORRELACIÓN ===================== #
+correlation_matrix = calculate_correlation_returns_all_instruments_csv(clean_data.set_index(["Symbol", "Date"]))
+fig_corr = ff.create_annotated_heatmap(
+    z=correlation_matrix.values.round(2),
+    x=correlation_matrix.columns.tolist(),
+    y=correlation_matrix.index.tolist(),
+    colorscale="RdBu",
+    zmin=-1,
+    zmax=1,
+    showscale=True
+)
+fig_corr.update_layout(title="Matriz de Correlación de Retornos", autosize=True)
+
+# ===================== TOTALES ===================== #
+total_row = pd.Series({
+    "Symbol": "TOTAL",
+    "Quantity": holdings["Quantity"].sum(),
+    "Total Cost": holdings["Total Cost"].sum(),
+    "Market Value": holdings["Market Value"].sum(),
+    "G/P": holdings["G/P"].sum(),
+    "% G/P": (holdings["G/P"].sum() / holdings["Total Cost"].sum()) * 100,
+    "Start Value YTD": holdings["Start Value YTD"].sum(),
+    "Δ USD YTD": holdings["Δ USD YTD"].sum(),
+    "Δ % YTD": (holdings["Δ USD YTD"].sum() / holdings["Start Value YTD"].sum()) * 100,
+    "Weight": holdings["Weight"].sum(),
+    "Weighted Volatility": holdings["Weighted Volatility"].sum()
+})
+
+dashboard_data = pd.concat([holdings.reset_index(), pd.DataFrame([total_row])], ignore_index=True)
+
 # ===================== DASHBOARD ===================== #
 dashboard = dash.Dash(__name__)
 dashboard.layout = html.Div([
@@ -122,23 +167,10 @@ dashboard.layout = html.Div([
     html.H3("Holdings con Métricas YTD"),
     dash_table.DataTable(
         columns=[
-            {"name": "Symbol", "id": "Symbol"},
-            {"name": "Quantity", "id": "Quantity"},
-            {"name": "Average Price", "id": "Average Price", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Total Cost", "id": "Total Cost", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Last Close", "id": "Last Close", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Market Value", "id": "Market Value", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "G/P", "id": "G/P", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "% G/P", "id": "% G/P", "type": "numeric", "format": {"specifier": ".2f"}},
-            {"name": "Start Value", "id": "Start Value", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Δ USD", "id": "Δ USD", "type": "numeric", "format": {"specifier": "$,.2f"}},
-            {"name": "Δ %", "id": "Δ %", "type": "numeric", "format": {"specifier": ".2f"}},
-            {"name": "Volatility (%)", "id": "Volatility (%)", "type": "numeric", "format": {"specifier": ".2f"}},
-            {"name": "Last Price Date", "id": "Last Price Date"},
-            {"name": "Weight", "id": "Weight", "type": "numeric", "format": {"specifier": ".2%"}},
-            {"name": "Weighted Volatility", "id": "Weighted Volatility", "type": "numeric", "format": {"specifier": ".2f"}},
+            {"name": col, "id": col, "type": "numeric" if col not in ["Symbol", "Last Price Date"] else "text", "format": {"specifier": "$,.2f"} if "Price" in col or "Cost" in col or "Value" in col or col == "G/P" else {"specifier": ".2f"} if "%" in col else None}
+            for col in dashboard_data.columns
         ],
-        data=holdings.reset_index().to_dict("records"),
+        data=dashboard_data.to_dict("records"),
         style_table={"overflowX": "auto"},
     ),
 
@@ -147,8 +179,10 @@ dashboard.layout = html.Div([
     html.P(f"Rendimiento YTD del Portafolio: {portfolio_ytd:.2f}%"),
     html.P(f"Volatilidad Ponderada del Portafolio: {portfolio_volatility:.2f}%"),
     html.P(f"Volatilidad del SPY: {spy_volatility:.2f}%" if spy_volatility is not None else "Volatilidad del SPY no disponible"),
+    html.P(f"Sharpe Ratio del Portafolio (YTD): {sharpe_ratio:.2f}" if sharpe_ratio is not None else "Sharpe Ratio no disponible"),
 
-    dcc.Graph(figure=fig_ytd)
+    dcc.Graph(figure=fig_ytd),
+    dcc.Graph(figure=fig_corr)
 ])
 
 if __name__ == "__main__":
