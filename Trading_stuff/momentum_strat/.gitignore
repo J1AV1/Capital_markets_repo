@@ -1,0 +1,12 @@
+# Carpeta de datos locales
+ib_data_full/
+logs_live/
+
+# Archivos temporales
+*.bak
+*.log
+*.sqlite
+
+# Config local
+__pycache__/
+.env
