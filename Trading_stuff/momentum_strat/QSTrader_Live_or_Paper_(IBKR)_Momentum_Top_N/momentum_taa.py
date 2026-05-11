@@ -173,7 +173,7 @@ if __name__ == "__main__":
 
     # To avoid loading all CSV files in the directory, set the
     # data source to load only those provided symbols
-    csv_dir = 'ib_data_full'
+    csv_dir = r"c:/Users/jalpi/git_repos/Capital_markets/Trading_stuff/momentum_strat/QSTrader_Live_or_Paper_(IBKR)_Momentum_Top_N/ib_data_full"
     strategy_data_source = CSVDailyBarDataSource(csv_dir, Equity, csv_symbols=strategy_symbols, adjust_prices=False)
     strategy_data_handler = BacktestDataHandler(strategy_universe, data_sources=[strategy_data_source])
 

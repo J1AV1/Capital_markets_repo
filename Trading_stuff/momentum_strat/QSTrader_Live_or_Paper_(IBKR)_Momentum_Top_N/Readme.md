@@ -7,7 +7,7 @@ Este paquete te permite ejecutar en vivo/paper tu estrategia Top-N Momentum con 
   momentum_taa.py          # AlphaModel Top N Momentum (reutilizado del backtest)
   live_config.py           # Configuración de símbolos, rebalanceo, rutas, IBKR, etc.
   broker_ibkr.py           # Adaptador de bróker (IBKR con ib_insync)
-  data_csv_live.py         # Entorno de datos CSV para señales y precios EOD
+  data_live_csv.py         # Entorno de datos CSV para señales y precios EOD
   utils_live.py            # Utilidades (rebalanceo, sizing -> órdenes)
   live_state.py            # Persistencia de logs (snapshots, órdenes, equity)
   live_runner_ibkr.py      # Runner principal en vivo (orquestación diaria/EOM)

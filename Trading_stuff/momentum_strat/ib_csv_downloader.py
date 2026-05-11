@@ -6,7 +6,7 @@ import os
 import time
 
 ib = IB()
-ib.connect("127.0.0.1", 7496, clientId=1)
+ib.connect("127.0.0.1", 7497, clientId=1)
 
 # === Configura tus símbolos aquí ===
 symbols = ['SPY','NVDA','MSFT','AAPL','AMZN','META','AVGO','GOOG','BRK B','TSLA','JPM']  # Cambia a los que necesites

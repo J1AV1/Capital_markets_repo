@@ -5,7 +5,7 @@ import pytz
 SYMBOLS = ['NVDA','MSFT','AAPL','AMZN','META','AVGO','GOOG','BRK B','TSLA','JPM']
 ASSETS  = [f"EQ:{s}" for s in SYMBOLS]
 
-CSV_DIR = 'ib_data_full'      # carpeta con tus CSVs diarios
+CSV_DIR = r"c:/Users/jalpi/git_repos/Capital_markets/Trading_stuff/momentum_strat/QSTrader_Live_or_Paper_(IBKR)_Momentum_Top_N/ib_data_full"      # carpeta con tus CSVs diarios
 CASH_BUFFER = 0.01            # igual que backtest
 MOM_LOOKBACK = 126
 MOM_TOP_N = 3
