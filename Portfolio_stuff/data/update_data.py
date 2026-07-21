@@ -35,9 +35,9 @@ def update_ibkr_prices_to_db(
         return 9
 
     try:
-        from db import insert_or_update_prices_batch, get_all_symbols
+        from .db import insert_or_update_prices_batch, get_all_symbols
     except Exception as e:
-        print(f"[ERROR] No se pudo importar db: {e}")
+        print(f"[ERROR] No se pudo importar db local: {e}")
         return 10
 
     # ---- Helpers ----
@@ -168,9 +168,9 @@ def add_instruments_to_db(
         return 9
 
     try:
-        from db import insert_or_update_prices_batch
+        from .db import insert_or_update_prices_batch
     except Exception as e:
-        print(f"[ERROR] No se pudo importar db: {e}")
+        print(f"[ERROR] No se pudo importar db local: {e}")
         return 10
 
     def build_contract(symbol: str) -> Stock:

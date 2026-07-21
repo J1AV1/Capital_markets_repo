@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+
+# Entornos virtuales
+.venv/
+
+# Libros / PDFs (derechos de autor, archivos grandes)
+*.pdf
+
+# Credenciales
+token_store.json

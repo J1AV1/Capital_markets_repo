@@ -247,9 +247,12 @@ def get_latest_close(symbol: str) -> Optional[Tuple[str, float]]:
     return (row["date"], row["close"]) if row else None
 
 
-def get_latest_data_date() -> Optional[str]:
+def get_latest_data_date(ignore_symbols: Optional[List[str]] = None) -> Optional[str]:
+    ignore_set = {normalize_symbol(s) for s in (ignore_symbols or [])}
     latest_date = None
     for symbol in get_all_symbols():
+        if normalize_symbol(symbol) in ignore_set:
+            continue
         latest = get_latest_close(symbol)
         if latest:
             date_str, _ = latest
@@ -258,8 +261,11 @@ def get_latest_data_date() -> Optional[str]:
     return latest_date
 
 
-def needs_data_update() -> bool:
-    latest_date = get_latest_data_date()
+def needs_data_update(ignore_symbols: Optional[List[str]] = None) -> bool:
+    if ignore_symbols is None:
+        ignore_symbols = ["ALL"]
+
+    latest_date = get_latest_data_date(ignore_symbols=ignore_symbols)
     if latest_date is None:
         return True
 
