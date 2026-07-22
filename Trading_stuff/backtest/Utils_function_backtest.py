@@ -114,6 +114,48 @@ def annualise_vol(daily_vol):
     return daily_vol * ANNUALISATION
 
 
+def apply_buffer(optimal, buffer_frac=0.1, round_positions=True):
+    """
+    Banda de no-negociacion de Carver (capitulo 8) para reducir trading/costos.
+
+    Ancho de la banda:  B_t = buffer_frac * N_t   (buffer_frac = 0.1 => 10% de N)
+    Zona:               [ round(N_t - B_t) , round(N_t + B_t) ]
+
+    Decision, dada la posicion actual C (heredada del dia previo):
+        - si  B^L <= C <= B^U : no operar (mantener C)
+        - si  C < B^L         : comprar hasta B^L
+        - si  C > B^U         : vender hasta B^U
+
+    Es path-dependent: la posicion de hoy depende de si ayer se opero o no, por
+    lo que se calcula iterando dia a dia. Long-only (las estrategias siempre
+    estan largas).
+
+    :param optimal: pd.Series de la posicion optima N_t (fraccional, puede tener NaN en warmup).
+    :param buffer_frac: fraccion del ancho de banda (0.1 = recomendado por Carver).
+    :param round_positions: redondear los bordes de la banda a unidades enteras.
+    :return: pd.Series de la posicion realmente mantenida (buffered).
+    """
+    n = optimal.to_numpy(dtype=float)
+    out = np.full(len(n), np.nan)
+    current = 0.0
+    for t in range(len(n)):
+        if np.isnan(n[t]):
+            continue
+        width = buffer_frac * abs(n[t])
+        lower = n[t] - width
+        upper = n[t] + width
+        if round_positions:
+            lower = round(lower)
+            upper = round(upper)
+        if current < lower:
+            current = lower          # comprar hasta el borde inferior
+        elif current > upper:
+            current = upper          # vender hasta el borde superior
+        # else: dentro de la banda -> mantener
+        out[t] = current
+    return pd.Series(out, index=optimal.index)
+
+
 def position_size(capital, target_risk, price, sigma_annual,
                   multiplier=1.0, weight=1.0, idm=1.0, fx=1.0):
     """
@@ -197,6 +239,36 @@ def equal_weights(symbols):
     return {s: 1.0 / n for s in symbols} if n else {}
 
 
+def buy_and_hold_returns(prices, weights=None):
+    """
+    Retornos diarios del benchmark BUY & HOLD, 100% invertido, usando los
+    MISMOS pesos que el backtest que se esta comparando.
+
+        r_bench_t = sum_i ( weight_i * r_i,t )
+
+    Es un portafolio de pesos constantes (rebalanceo implicito). Para un solo
+    instrumento equivale a estar 100% invertido en el (weight = 1).
+
+    Cuando un instrumento aun no tiene datos (historias distintas), no aporta a
+    ese dia (min_count=1), igual que la estrategia solo opera los instrumentos
+    disponibles.
+
+    :param prices: pd.Series de precios (un instrumento) o dict {symbol: Series}.
+    :param weights: dict {symbol: peso}. None -> pesos iguales (solo dict).
+    :return: pd.Series de retornos diarios del benchmark.
+    """
+    if isinstance(prices, pd.Series):
+        return prices.pct_change()
+
+    symbols = list(prices.keys())
+    if weights is None:
+        weights = equal_weights(symbols)
+    rets = pd.DataFrame({s: prices[s].pct_change() for s in symbols})
+    w = pd.Series({s: weights[s] for s in symbols})
+    weighted = rets.mul(w, axis=1)
+    return weighted.sum(axis=1, min_count=1)
+
+
 def performance_stats(returns, capital=None):
     """
     Estadisticos de desempeño al estilo Carver a partir de retornos porcentuales
@@ -250,22 +322,170 @@ def performance_stats(returns, capital=None):
     return stats
 
 
+# Comisiones IBKR - plan Fixed para acciones/ETFs de EE.UU.
+#   0.005 USD por accion, minimo 1.00 USD por orden, maximo 1% del valor.
+IBKR_PER_SHARE = 0.005
+IBKR_MIN_PER_ORDER = 1.00
+IBKR_MAX_PCT = 0.01
+
+
+def ibkr_commission(shares_traded, price,
+                    per_share=IBKR_PER_SHARE,
+                    min_per_order=IBKR_MIN_PER_ORDER,
+                    max_pct=IBKR_MAX_PCT):
+    """
+    Comision IBKR (plan Fixed, acciones/ETFs US) para una orden.
+
+        comision = min( max(per_share * |acciones|, min_por_orden),
+                        max_pct * valor_operacion )
+
+    El tope maximo (1% del valor) gana sobre el minimo en ordenes muy pequenas.
+
+    :param shares_traded: unidades compradas (+) o vendidas (-); se usa el valor absoluto.
+    :param price: precio de ejecucion.
+    :return: comision en USD (0 si no hay trade).
+    """
+    shares = abs(float(shares_traded))
+    if shares == 0:
+        return 0.0
+    raw = shares * per_share
+    trade_value = shares * float(price)
+    return min(max(raw, min_per_order), max_pct * trade_value)
+
+
+def realized_unrealized_pnl(price, position, multiplier=1.0, commissions=True,
+                            per_share=IBKR_PER_SHARE,
+                            min_per_order=IBKR_MIN_PER_ORDER,
+                            max_pct=IBKR_MAX_PCT):
+    """
+    Descompone el P&L de una sub-estrategia en realizado / no realizado, con
+    comisiones IBKR incorporadas al COSTO PROMEDIO.
+
+      - realizado   : P&L materializado al VENDER acciones en los rebalanceos,
+                      NETO de la comision de venta (lo que queda "en caja").
+      - no realizado: P&L latente de la posicion abierta; el costo promedio
+                      incluye la comision de compra pagada.
+      - comisiones  : total de comisiones IBKR pagadas en el periodo.
+
+    Contabilidad por costo promedio, long-only (valido: las estrategias siempre
+    estan largas). Los trades se ejecutan al cierre P_t.
+
+    Identidades:
+        realizado + no_realizado            == P&L neto
+        P&L neto + comisiones               == P&L bruto (mark-to-market)
+
+    :param commissions: si False, comision = 0 (P&L bruto = neto).
+    :return: dict con realized, unrealized, commissions, net_total, gross_total,
+             n_trades y las series acumuladas realized_series / unrealized_series.
+    """
+    df = pd.DataFrame({"price": price, "position": position}).dropna(subset=["price", "position"])
+    p = df["price"].to_numpy(dtype=float)
+    n = df["position"].to_numpy(dtype=float)
+
+    shares = 0.0
+    avg_cost = 0.0          # costo promedio, con comision de compra cargada
+    realized = 0.0
+    total_comm = 0.0
+    n_trades = 0
+    tol = 1e-12
+
+    realized_arr = np.empty(len(p))
+    unreal_arr = np.empty(len(p))
+
+    for t in range(len(p)):
+        target = n[t]
+        delta = target - shares
+        if delta > tol:                                  # compra
+            comm = ibkr_commission(delta, p[t], per_share, min_per_order, max_pct) if commissions else 0.0
+            total_comm += comm
+            n_trades += 1
+            total = shares + delta
+            # costo base = costo previo + efectivo pagado (precio + comision)
+            avg_cost = (shares * avg_cost + delta * p[t] * multiplier + comm) / total
+            shares = target
+        elif delta < -tol:                               # venta: realiza
+            sold = -delta
+            comm = ibkr_commission(sold, p[t], per_share, min_per_order, max_pct) if commissions else 0.0
+            total_comm += comm
+            n_trades += 1
+            realized += sold * (p[t] * multiplier - avg_cost) - comm
+            shares = target
+            if abs(shares) < tol:
+                shares = 0.0
+        realized_arr[t] = realized
+        unreal_arr[t] = shares * (p[t] * multiplier - avg_cost)
+
+    realized_series = pd.Series(realized_arr, index=df.index)
+    unreal_series = pd.Series(unreal_arr, index=df.index)
+    net_total = realized_series.iloc[-1] + unreal_series.iloc[-1] if len(p) else 0.0
+
+    return {
+        "realized": float(realized_series.iloc[-1]) if len(p) else 0.0,
+        "unrealized": float(unreal_series.iloc[-1]) if len(p) else 0.0,
+        "commissions": float(total_comm),
+        "net_total": float(net_total),
+        "gross_total": float(net_total + total_comm),
+        "n_trades": n_trades,
+        "realized_series": realized_series,
+        "unrealized_series": unreal_series,
+    }
+
+
+def print_pnl_split(split, label="Estrategia"):
+    """Imprime el desglose bruto / comisiones / neto (realizado + no realizado)."""
+    net = split["net_total"]
+    if net == 0:
+        return
+    realized, unrealized = split["realized"], split["unrealized"]
+    print(f"\n  Desglose P&L ({label}):")
+    print(f"    P&L bruto (mark-to-market): {split['gross_total']:>14,.0f}")
+    print(f"    Comisiones IBKR           : {-split['commissions']:>14,.0f}  ({split['n_trades']:,} trades)")
+    print(f"    P&L neto                  : {net:>14,.0f}")
+    print(f"      Realizado (en caja)     : {realized:>14,.0f}  ({realized / net:>6.1%} del neto)")
+    print(f"      No realizado (abierto)  : {unrealized:>14,.0f}  ({unrealized / net:>6.1%} del neto)")
+    print(f"    Buy & Hold: 100% no realizado (solo paga la comision de compra inicial)")
+
+
+_STATS_FMT = {
+    "years_of_data": ("Años de datos", "{:.1f}"),
+    "mean_annual_return": ("Retorno anual medio", "{:.2%}"),
+    "annualised_std": ("Desv. estándar anualizada", "{:.2%}"),
+    "sharpe_ratio": ("Sharpe ratio", "{:.2f}"),
+    "skew_monthly": ("Skew (mensual)", "{:.2f}"),
+    "avg_drawdown": ("Drawdown medio", "{:.2%}"),
+    "max_drawdown": ("Drawdown máximo", "{:.2%}"),
+    "lower_tail": ("Lower tail", "{:.2f}"),
+    "upper_tail": ("Upper tail", "{:.2f}"),
+    "total_pnl": ("P&L total ($)", "{:,.0f}"),
+}
+
+
 def print_stats(stats, title=""):
     """Imprime los estadisticos de performance en formato legible."""
     if title:
         print(f"\n== {title} ==")
-    fmt = {
-        "years_of_data": ("Años de datos", "{:.1f}"),
-        "mean_annual_return": ("Retorno anual medio", "{:.2%}"),
-        "annualised_std": ("Desv. estándar anualizada", "{:.2%}"),
-        "sharpe_ratio": ("Sharpe ratio", "{:.2f}"),
-        "skew_monthly": ("Skew (mensual)", "{:.2f}"),
-        "avg_drawdown": ("Drawdown medio", "{:.2%}"),
-        "max_drawdown": ("Drawdown máximo", "{:.2%}"),
-        "lower_tail": ("Lower tail", "{:.2f}"),
-        "upper_tail": ("Upper tail", "{:.2f}"),
-        "total_pnl": ("P&L total ($)", "{:,.0f}"),
-    }
-    for key, (label, f) in fmt.items():
+    for key, (label, f) in _STATS_FMT.items():
         if key in stats:
             print(f"  {label:<28s}: {f.format(stats[key])}")
+
+
+def print_stats_comparison(stats_strat, stats_bench, title="",
+                           label_strat="Estrategia", label_bench="Buy & Hold"):
+    """
+    Imprime dos conjuntos de estadisticos lado a lado (estrategia vs benchmark),
+    con la diferencia de Sharpe al final.
+    """
+    if title:
+        print(f"\n== {title} ==")
+    print(f"  {'':<28s}  {label_strat:>14s}  {label_bench:>14s}")
+    print(f"  {'-' * 28}  {'-' * 14}  {'-' * 14}")
+    for key, (label, f) in _STATS_FMT.items():
+        if key in stats_strat or key in stats_bench:
+            a = f.format(stats_strat[key]) if key in stats_strat else "-"
+            b = f.format(stats_bench[key]) if key in stats_bench else "-"
+            print(f"  {label:<28s}  {a:>14s}  {b:>14s}")
+    if "sharpe_ratio" in stats_strat and "sharpe_ratio" in stats_bench:
+        delta = stats_strat["sharpe_ratio"] - stats_bench["sharpe_ratio"]
+        ganador = label_strat if delta >= 0 else label_bench
+        print(f"  {'-' * 28}  {'-' * 14}  {'-' * 14}")
+        print(f"  {'Sharpe (estrat - bench)':<28s}  {delta:>+14.2f}  -> {ganador}")

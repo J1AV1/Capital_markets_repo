@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 import Utils_function_backtest as utils
-from strategy3_backtest import load_prices
+from Trading_stuff.backtest.strategy3_buffer_selected_backtest import load_prices
 
 # Acceso a la BD centralizada en Portfolio_stuff/data
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -41,7 +41,8 @@ import db  # noqa: E402
 
 
 def _sub_strategy(symbol, capital, target_risk, weight, idm, multiplier,
-                  span, long_window_years, round_positions, start_date, end_date):
+                  span, long_window_years, round_positions, start_date, end_date,
+                  buffer=True, buffer_frac=0.1):
     """
     Calcula la sub-estrategia (strategy three con peso + IDM) para un simbolo.
 
@@ -53,7 +54,7 @@ def _sub_strategy(symbol, capital, target_risk, weight, idm, multiplier,
     sigma_daily = utils.blended_daily_vol(returns, span=span, long_window_years=long_window_years)
     sigma_annual = utils.annualise_vol(sigma_daily)
 
-    position = utils.position_size(
+    optimal = utils.position_size(
         capital=capital,
         target_risk=target_risk,
         price=price,
@@ -62,8 +63,10 @@ def _sub_strategy(symbol, capital, target_risk, weight, idm, multiplier,
         weight=weight,
         idm=idm,
     )
-    if round_positions:
-        position = position.round()
+    if buffer:
+        position = utils.apply_buffer(optimal, buffer_frac=buffer_frac, round_positions=round_positions)
+    else:
+        position = optimal.round() if round_positions else optimal
 
     df = pd.DataFrame({"price": price, "sigma_annual": sigma_annual, "position": position})
     df["pnl"] = df["position"].shift(1) * df["price"].diff() * multiplier
@@ -81,6 +84,8 @@ def run_strategy4(
     span=32,
     long_window_years=10,
     round_positions=True,
+    buffer=True,
+    buffer_frac=0.1,
     start_date=None,
     end_date=None,
 ):
@@ -106,13 +111,14 @@ def run_strategy4(
     if weights is None:
         weights = utils.equal_weights(symbols)
 
-    # --- Paso 1: sub-estrategias base (weight aplicado, IDM=1) para correlaciones ---
+    # --- Paso 1: sub-estrategias base (posiciones ideales sin buffer) para correlaciones ---
     base = {}
     for sym in symbols:
         base[sym] = _sub_strategy(
             sym, capital, target_risk, weights[sym], idm=1.0, multiplier=multiplier,
             span=span, long_window_years=long_window_years,
             round_positions=False, start_date=start_date, end_date=end_date,
+            buffer=False,
         )
 
     # --- Paso 2: IDM desde la correlacion de las sub-estrategias ---
@@ -120,13 +126,14 @@ def run_strategy4(
     if idm is None:
         idm = utils.compute_idm(sub_returns, weights)
 
-    # --- Paso 3: recalcular sub-estrategias con el IDM final ---
+    # --- Paso 3: recalcular sub-estrategias con el IDM final (aplicando buffer) ---
     per_instrument = {}
     for sym in symbols:
         per_instrument[sym] = _sub_strategy(
             sym, capital, target_risk, weights[sym], idm=idm, multiplier=multiplier,
             span=span, long_window_years=long_window_years,
             round_positions=round_positions, start_date=start_date, end_date=end_date,
+            buffer=buffer, buffer_frac=buffer_frac,
         )
 
     # --- Paso 4: agregar P&L del portafolio ---
@@ -134,8 +141,14 @@ def run_strategy4(
     portfolio_pnl = pnl.sum(axis=1, min_count=1)
     portfolio = pd.DataFrame({"pnl": portfolio_pnl})
     portfolio["ret_pct"] = portfolio["pnl"] / capital
+
+    # --- Benchmark: buy & hold 100% invertido con los MISMOS pesos ---
+    prices = {sym: per_instrument[sym]["price"] for sym in symbols}
+    portfolio["bench_ret"] = utils.buy_and_hold_returns(prices, weights)
+
     portfolio = portfolio.dropna(subset=["ret_pct"])
     portfolio["cum_ret"] = portfolio["ret_pct"].cumsum()
+    portfolio["bench_cum"] = portfolio["bench_ret"].cumsum()
 
     # Stats por instrumento (sobre su contribucion al portafolio total)
     per_stats = {}
@@ -154,7 +167,8 @@ def plot_results(portfolio, per_instrument, target_risk, idm):
     # Curvas individuales (tenues) + portafolio agregado
     for sym, sub in per_instrument.items():
         axes[0].plot(sub.index, sub["ret_pct"].cumsum() * 100, lw=0.8, alpha=0.4)
-    axes[0].plot(portfolio.index, portfolio["cum_ret"] * 100, color="black", lw=2, label="Portafolio")
+    axes[0].plot(portfolio.index, portfolio["cum_ret"] * 100, color="black", lw=2, label="Estrategia 4")
+    axes[0].plot(portfolio.index, portfolio["bench_cum"] * 100, color="tab:red", lw=1.5, ls="--", label="Buy & Hold (mismos pesos)")
     axes[0].set_ylabel("Retorno acum. (%)")
     axes[0].set_title(f"Estrategia 4 - Portafolio (target {target_risk:.0%}, IDM {idm:.2f})")
     axes[0].legend(loc="upper left")
@@ -182,6 +196,8 @@ def main():
     parser.add_argument("--span", type=int, default=32, help="Span del EWMA de volatilidad.")
     parser.add_argument("--long_window_years", type=int, default=10, help="Anos de la ventana movil de la vol larga.")
     parser.add_argument("--no_round", action="store_true", help="No redondear posiciones (permite fraccional).")
+    parser.add_argument("--no_buffer", action="store_true", help="Desactivar la banda de no-negociación (rebalanceo diario).")
+    parser.add_argument("--buffer_frac", type=float, default=0.1, help="Ancho de la banda como fracción de N (0.1 default).")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar graficos.")
@@ -199,15 +215,32 @@ def main():
         span=args.span,
         long_window_years=args.long_window_years,
         round_positions=not args.no_round,
+        buffer=not args.no_buffer,
+        buffer_frac=args.buffer_frac,
         start_date=args.start,
         end_date=args.end,
     )
 
     stats = utils.performance_stats(portfolio["ret_pct"], capital=args.capital)
+    bench_stats = utils.performance_stats(portfolio["bench_ret"], capital=args.capital)
     print(f"\nInstrumentos ({meta['n']}): {', '.join(symbols)}")
     print(f"Peso por instrumento : {1.0 / meta['n']:.2%} (iguales)")
     print(f"IDM                  : {meta['idm']:.3f}")
-    utils.print_stats(stats, title=f"Estrategia 4 - Portafolio ({meta['n']} instrumentos)")
+    utils.print_stats_comparison(
+        stats, bench_stats,
+        title=f"Estrategia 4 vs Buy & Hold - Portafolio ({meta['n']} instrumentos)",
+        label_strat="Estrategia 4", label_bench="Buy & Hold",
+    )
+
+    # Desglose realizado / no realizado agregando todos los instrumentos
+    agg = {"realized": 0.0, "unrealized": 0.0, "commissions": 0.0,
+           "net_total": 0.0, "gross_total": 0.0, "n_trades": 0}
+    for sym in symbols:
+        sub = per_instrument[sym]
+        split = utils.realized_unrealized_pnl(sub["price"], sub["position"])
+        for k in agg:
+            agg[k] += split[k]
+    utils.print_pnl_split(agg, label="Estrategia 4")
 
     if args.plot:
         plot_results(portfolio, per_instrument, args.target_risk, meta["idm"])

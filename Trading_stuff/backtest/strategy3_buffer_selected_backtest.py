@@ -57,6 +57,8 @@ def run_strategy3(
     span=32,
     long_window_years=10,
     round_positions=True,
+    buffer=True,
+    buffer_frac=0.1,
     start_date=None,
     end_date=None,
 ):
@@ -69,7 +71,9 @@ def run_strategy3(
     :param span: span del EWMA de volatilidad (32 = lambda ~0.06).
     :param long_window_years: años de la ventana móvil de la media larga de vol.
     :param round_positions: redondear la posición a entero (True) o dejar fraccional.
-    :return: pd.DataFrame con price, returns, sigma, position, pnl, ret_pct, cum_ret.
+    :param buffer: aplicar banda de no-negociación de Carver (cap. 8) para reducir costos.
+    :param buffer_frac: ancho de la banda como fracción de N (0.1 = recomendado).
+    :return: pd.DataFrame con price, returns, sigma, optimal, position, pnl, ret_pct, cum_ret.
     """
     price = load_prices(symbol, start_date=start_date, end_date=end_date)
     returns = price.pct_change()
@@ -86,21 +90,31 @@ def run_strategy3(
         sigma_annual=sigma_annual,
         multiplier=multiplier,
     )
-    if round_positions:
-        optimal = optimal.round()
+
+    # Posición realmente mantenida: con banda de no-negociación o rebalanceo directo
+    if buffer:
+        position = utils.apply_buffer(optimal, buffer_frac=buffer_frac, round_positions=round_positions)
+    else:
+        position = optimal.round() if round_positions else optimal
 
     df = pd.DataFrame({
         "price": price,
         "returns": returns,
         "sigma_annual": sigma_annual,
-        "position": optimal,
+        "optimal": optimal,
+        "position": position,
     })
 
     # P&L usa la posición del día anterior sobre el cambio de precio (sin look-ahead)
     df["pnl"] = df["position"].shift(1) * df["price"].diff() * multiplier
     df["ret_pct"] = df["pnl"] / capital
+
+    # Benchmark: buy & hold 100% invertido en el mismo instrumento (weight = 1)
+    df["bench_ret"] = utils.buy_and_hold_returns(price)
+
     df = df.dropna(subset=["position"])
     df["cum_ret"] = df["ret_pct"].cumsum()
+    df["bench_cum"] = df["bench_ret"].cumsum()
 
     return df
 
@@ -110,9 +124,11 @@ def plot_results(df, symbol, target_risk):
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
 
-    axes[0].plot(df.index, df["cum_ret"] * 100, color="tab:blue")
+    axes[0].plot(df.index, df["cum_ret"] * 100, color="tab:blue", label="Estrategia 3")
+    axes[0].plot(df.index, df["bench_cum"] * 100, color="tab:grey", lw=1, ls="--", label="Buy & Hold")
     axes[0].set_ylabel("Retorno acum. (%)")
     axes[0].set_title(f"Estrategia 3 - {symbol} (target risk {target_risk:.0%})")
+    axes[0].legend(loc="upper left")
     axes[0].grid(alpha=0.3)
 
     axes[1].plot(df.index, df["sigma_annual"] * 100, color="tab:orange")
@@ -137,6 +153,8 @@ def main():
     parser.add_argument("--span", type=int, default=32, help="Span del EWMA de volatilidad.")
     parser.add_argument("--long_window_years", type=int, default=10, help="Años de la ventana móvil de la media larga de vol.")
     parser.add_argument("--no_round", action="store_true", help="No redondear posiciones (permite fraccional).")
+    parser.add_argument("--no_buffer", action="store_true", help="Desactivar la banda de no-negociación (rebalanceo diario).")
+    parser.add_argument("--buffer_frac", type=float, default=0.1, help="Ancho de la banda como fracción de N (0.1 default).")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar gráficos.")
@@ -149,12 +167,22 @@ def main():
         span=args.span,
         long_window_years=args.long_window_years,
         round_positions=not args.no_round,
+        buffer=not args.no_buffer,
+        buffer_frac=args.buffer_frac,
         start_date=args.start,
         end_date=args.end,
     )
 
     stats = utils.performance_stats(df["ret_pct"], capital=args.capital)
-    utils.print_stats(stats, title=f"Estrategia 3 - {args.symbol}")
+    bench_stats = utils.performance_stats(df["bench_ret"], capital=args.capital)
+    utils.print_stats_comparison(
+        stats, bench_stats,
+        title=f"Estrategia 3 vs Buy & Hold - {args.symbol}",
+        label_strat="Estrategia 3", label_bench="Buy & Hold",
+    )
+
+    split = utils.realized_unrealized_pnl(df["price"], df["position"])
+    utils.print_pnl_split(split, label="Estrategia 3")
 
     if args.plot:
         plot_results(df, args.symbol, args.target_risk)
