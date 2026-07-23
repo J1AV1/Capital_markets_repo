@@ -35,7 +35,10 @@ def update_ibkr_prices_to_db(
         return 9
 
     try:
-        from .db import insert_or_update_prices_batch, get_all_symbols
+        try:
+            from .db import insert_or_update_prices_batch, get_all_symbols, get_latest_close
+        except ImportError:
+            from db import insert_or_update_prices_batch, get_all_symbols, get_latest_close
     except Exception as e:
         print(f"[ERROR] No se pudo importar db local: {e}")
         return 10
@@ -66,34 +69,52 @@ def update_ibkr_prices_to_db(
         df = pd.DataFrame(rows).drop_duplicates(subset=["date"]).sort_values("date")
         return df.to_dict("records")
 
-    def fetch_recent_daily_bars(ib: IB, contract: Stock, min_days: int) -> List[BarData]:
-        duration_str = f"{max(5, min_days)} D"
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr=duration_str,
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=use_rth,
-            formatDate=1,
-            keepUpToDate=False
-        )
-        if not bars:
-            ib.sleep(0.5)
-        return bars or []
+    today = pd.Timestamp.now().normalize()
 
     def update_one_ticker(ib: IB, symbol: str) -> Tuple[str, int]:
-        """Actualiza un símbolo desde IBKR a BD."""
+        """
+        Actualización incremental: mira la última fecha en la BD y trae solo lo
+        faltante hasta t-1 (excluye la barra incompleta del día en curso).
+        No mira hacia atrás más allá del hueco existente.
+        """
         try:
+            latest = get_latest_close(symbol)
+            if latest is None:
+                print(f"  [SKIP] {symbol}: sin datos previos (usa add_instruments_to_db.py)")
+                return symbol, 0
+
+            latest_date = pd.Timestamp(latest[0]).normalize()
+            gap_days = (today - latest_date).days
+            if gap_days <= 1:
+                # La BD ya está en t-1 (o más nueva): nada que traer.
+                return symbol, 0
+
+            # Duración justa para cubrir el hueco, con margen para fines de semana/feriados.
+            duration_str = f"{gap_days + 4} D"
+
             contract = build_contract(symbol)
             ib.qualifyContracts(contract)
-            bars = fetch_recent_daily_bars(ib, contract, min_days_fetch)
+            bars = ib.reqHistoricalData(
+                contract,
+                endDateTime="",
+                durationStr=duration_str,
+                barSizeSetting=bar_size,
+                whatToShow=what_to_show,
+                useRTH=use_rth,
+                formatDate=1,
+                keepUpToDate=False,
+            )
             records = bars_to_records(symbol, bars)
-            
+
+            # Solo lo faltante: fechas nuevas y excluyendo el día en curso (t).
+            records = [
+                r for r in records
+                if latest_date < pd.Timestamp(r["date"]) < today
+            ]
             if not records:
                 return symbol, 0
-            
-            inserted = insert_or_update_prices_batch(records)
+
+            insert_or_update_prices_batch(records)
             return symbol, len(records)
         except Exception as e:
             print(f"  [ERROR] {symbol}: {e}")
@@ -140,7 +161,7 @@ def update_ibkr_prices_to_db(
     for name, added in updated:
         print(f"  {name:>10s}: +{added} filas")
     print(f"Total filas nuevas en BD: {total_added}")
-    print("✅ Precios actualizados en BD (market_data.db)")
+    print("[OK] Precios actualizados en BD (market_data.db)")
 
     return 0
 
@@ -150,13 +171,26 @@ def add_instruments_to_db(
     host: str = "127.0.0.1",
     port: int = 7496,
     client_id: int = 43,
-    min_days_fetch: int = 3650,
+    min_days_fetch: int = 3650,  # deprecado: se ignora, ahora se trae historia completa
     bar_size: str = "1 day",
     what_to_show: str = "TRADES",
     use_rth: bool = True,
     sleep_between: float = 3.0,
+    chunk: str = "5 Y",
+    max_chunks: int = 15,
 ) -> int:
-    """Descarga datos para nuevos símbolos desde IBKR y los inserta en la BD."""
+    """
+    Descarga datos para nuevos símbolos desde IBKR y los inserta en la BD,
+    trayendo la HISTORIA COMPLETA (desde la data más vieja disponible).
+
+    IBKR limita cuánta historia entrega por request, así que se pide en bloques
+    hacia atrás (endDateTime retrocediendo) hasta que deja de devolver barras
+    nuevas = se llegó al inicio del activo. Los registros se ordenan por fecha
+    ascendente y se insertan de una vez para mantener el orden cronológico.
+
+    :param chunk: duración por request (ej. '5 Y', '10 Y').
+    :param max_chunks: máximo de bloques hacia atrás por símbolo.
+    """
     import time
     from typing import List, Tuple
     import pandas as pd
@@ -168,7 +202,10 @@ def add_instruments_to_db(
         return 9
 
     try:
-        from .db import insert_or_update_prices_batch
+        try:
+            from .db import insert_or_update_prices_batch
+        except ImportError:
+            from db import insert_or_update_prices_batch
     except Exception as e:
         print(f"[ERROR] No se pudo importar db local: {e}")
         return 10
@@ -196,28 +233,49 @@ def add_instruments_to_db(
         df = pd.DataFrame(rows).drop_duplicates(subset=["date"]).sort_values("date")
         return df.to_dict("records")
 
-    def fetch_historical_bars(ib: IB, contract: Stock, min_days: int) -> List[BarData]:
-        duration_str = f"{max(365, min_days)} D"
-        bars = ib.reqHistoricalData(
-            contract,
-            endDateTime="",
-            durationStr=duration_str,
-            barSizeSetting=bar_size,
-            whatToShow=what_to_show,
-            useRTH=use_rth,
-            formatDate=1,
-            keepUpToDate=False,
-        )
-        if not bars:
-            ib.sleep(0.5)
-        return bars or []
+    def fetch_full_history(ib: IB, contract: Stock, symbol: str) -> List[dict]:
+        """Pide historia hacia atrás en bloques hasta agotar la data disponible."""
+        all_records = {}
+        cursor = pd.Timestamp.now().normalize()
+        prev_earliest = cursor
+        for i in range(max_chunks):
+            end_str = cursor.strftime("%Y%m%d %H:%M:%S")
+            try:
+                bars = ib.reqHistoricalData(
+                    contract,
+                    endDateTime=end_str,
+                    durationStr=chunk,
+                    barSizeSetting=bar_size,
+                    whatToShow=what_to_show,
+                    useRTH=use_rth,
+                    formatDate=1,
+                    keepUpToDate=False,
+                )
+            except Exception as e:
+                print(f"  [WARN] {symbol} bloque {i+1}: {e}")
+                break
+            if not bars:
+                break
+            recs = bars_to_records(symbol, bars)
+            if not recs:
+                break
+            for r in recs:
+                all_records[r["date"]] = r
+            chunk_earliest = pd.to_datetime(recs[0]["date"])
+            # Si no retrocedimos, ya no hay más historia disponible.
+            if chunk_earliest >= prev_earliest:
+                break
+            prev_earliest = chunk_earliest
+            cursor = chunk_earliest  # el próximo request termina aquí (solape 1 día -> upsert)
+            ib.sleep(2.0)
+        # Ordenar por fecha ascendente para mantener el orden cronológico en la tabla.
+        return [all_records[d] for d in sorted(all_records)]
 
     def download_symbol(ib: IB, symbol: str) -> Tuple[str, int]:
         try:
             contract = build_contract(symbol)
             ib.qualifyContracts(contract)
-            bars = fetch_historical_bars(ib, contract, min_days_fetch)
-            records = bars_to_records(symbol, bars)
+            records = fetch_full_history(ib, contract, symbol)
             if not records:
                 return symbol, 0
             insert_or_update_prices_batch(records)
