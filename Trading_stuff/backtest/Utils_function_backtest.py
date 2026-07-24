@@ -114,6 +114,147 @@ def annualise_vol(daily_vol):
     return daily_vol * ANNUALISATION
 
 
+def _period_key(d, freq):
+    """Clave de periodo para la frecuencia de actualizacion del capital."""
+    if freq == "daily":
+        return (d.year, d.month, d.day)
+    if freq == "weekly":
+        iso = d.isocalendar()
+        return (iso[0], iso[1])
+    return (d.year, d.month)  # monthly
+
+
+def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
+                     buffer_frac=0.1, round_positions=False, multiplier=1.0,
+                     capital_mode="full", compound_freq="monthly",
+                     high_watermark=None):
+    """
+    Simulacion forward con capital compuesto (Carver, Tactica 3: cash & compounding).
+
+    El capital de sizing se actualiza al valor de la cuenta (equity = realizado +
+    no realizado) con la frecuencia indicada. Las posiciones escalan con ese capital,
+    de modo que las apuestas crecen con las ganancias y se reducen con las perdidas.
+
+    capital_mode:
+      - "full" : capital de sizing = equity (valor de cuenta mark-to-market).
+                 Maximiza el crecimiento geometrico si el riesgo esta en Kelly.
+      - "half" : high watermark (performance fee 100%). Actua como capital fijo cuando el
+                 capital de sizing alcanza el high watermark (retira/'skimea' el excedente)
+                 y como full compounding por debajo (reduce posicion). Sobrevive drawdowns
+                 severos igual que full, pero deja retirar ganancias. El high watermark por
+                 defecto es el capital inicial; se puede fijar con `high_watermark`.
+      - "fixed": capital constante (equivale al backtest no compuesto).
+
+    compound_freq: 'daily' | 'weekly' | 'monthly' - cada cuanto se actualiza el capital.
+
+    :param high_watermark: umbral del modo 'half' (None -> capital inicial). Con un HWM
+                           mayor al capital, se compone full hasta alcanzarlo y luego se skimea.
+
+    :param prices: dict {symbol: pd.Series de precios}.
+    :param sigmas: dict {symbol: pd.Series de sigma anualizada}.
+    :param weights: dict {symbol: peso}.
+    :param idm: Instrument Diversification Multiplier.
+    :return: (portfolio_df, per_instrument, info)
+        portfolio_df: DataFrame con pnl, capital, equity, ret_pct.
+        per_instrument: dict {symbol: DataFrame con price, sigma_annual, position, pnl}.
+        info: dict con final_equity, final_capital, skimmed.
+    """
+    syms = list(prices.keys())
+    price_df = pd.DataFrame({s: prices[s] for s in syms}).sort_index()
+    sigma_df = pd.DataFrame({s: sigmas[s] for s in syms}).reindex(price_df.index)
+    dates = price_df.index
+
+    P = price_df.to_numpy(dtype=float)
+    S = sigma_df.to_numpy(dtype=float)
+    w = np.array([weights[s] for s in syms], dtype=float)
+    m = len(syms)
+
+    held = np.zeros(m)
+    prev_price = np.full(m, np.nan)
+    positions = np.full((len(dates), m), np.nan)
+    pnl_arr = np.zeros(len(dates))
+    cap_arr = np.zeros(len(dates))
+    eq_arr = np.zeros(len(dates))
+
+    hwm = float(high_watermark) if high_watermark is not None else float(capital)
+    equity = float(capital)
+    notional = float(capital)
+    skimmed = 0.0
+    prev_key = None
+
+    for t in range(len(dates)):
+        # P&L del dia por las posiciones mantenidas desde ayer
+        pnl_day = 0.0
+        for j in range(m):
+            if held[j] != 0.0 and not np.isnan(P[t, j]) and not np.isnan(prev_price[j]):
+                pnl_day += held[j] * (P[t, j] - prev_price[j]) * multiplier
+        equity += pnl_day
+
+        # Actualizar el capital de sizing al inicio de cada periodo nuevo
+        key = _period_key(dates[t], compound_freq)
+        if prev_key is None or key != prev_key:
+            if capital_mode == "full":
+                notional = max(equity, 0.0)
+            elif capital_mode == "half":
+                avail = equity - skimmed
+                if avail > hwm:                     # sobre el high watermark -> skimear
+                    skimmed += avail - hwm
+                    notional = hwm
+                else:                               # por debajo -> full compounding
+                    notional = max(avail, 0.0)
+            else:                                   # fixed
+                notional = float(capital)
+        prev_key = key
+
+        # Rebalanceo con banda de no-negociacion
+        for j in range(m):
+            p = P[t, j]
+            sig = S[t, j]
+            if np.isnan(p) or np.isnan(sig) or sig <= 0:
+                if not np.isnan(p):
+                    prev_price[j] = p
+                continue
+            opt = notional * idm * w[j] * target_risk / (p * multiplier * sig)
+            band = buffer_frac * abs(opt)
+            lower, upper = opt - band, opt + band
+            if round_positions:
+                lower, upper = round(lower), round(upper)
+            cur = held[j]
+            new = lower if cur < lower else (upper if cur > upper else cur)
+            held[j] = new
+            positions[t, j] = new
+            prev_price[j] = p
+
+        pnl_arr[t] = pnl_day
+        cap_arr[t] = notional
+        eq_arr[t] = equity
+
+    portfolio = pd.DataFrame(
+        {"pnl": pnl_arr, "capital": cap_arr, "equity": eq_arr}, index=dates
+    )
+    # Retorno % sobre el capital vigente cuando se fijo la posicion (periodo previo),
+    # no el de hoy (que ya incluye el P&L del dia).
+    cap_prev = np.empty(len(dates))
+    if len(dates):
+        cap_prev[0] = capital
+        cap_prev[1:] = cap_arr[:-1]
+    portfolio["ret_pct"] = np.where(cap_prev > 0, pnl_arr / cap_prev, 0.0)
+
+    per_instrument = {}
+    for j, s in enumerate(syms):
+        sub = pd.DataFrame(
+            {"price": price_df[s], "sigma_annual": sigma_df[s], "position": positions[:, j]},
+            index=dates,
+        )
+        sub["pnl"] = sub["position"].shift(1) * sub["price"].diff() * multiplier
+        per_instrument[s] = sub
+
+    info = {"final_equity": float(equity), "final_capital": float(notional),
+            "skimmed": float(skimmed), "capital_mode": capital_mode,
+            "compound_freq": compound_freq, "high_watermark": hwm}
+    return portfolio, per_instrument, info
+
+
 def apply_buffer(optimal, buffer_frac=0.1, round_positions=True):
     """
     Banda de no-negociacion de Carver (capitulo 8) para reducir trading/costos.
@@ -429,6 +570,27 @@ def realized_unrealized_pnl(price, position, multiplier=1.0, commissions=True,
         "realized_series": realized_series,
         "unrealized_series": unreal_series,
     }
+
+
+def print_compound_summary(info, capital):
+    """Imprime el resumen del modo de capital compuesto (Tactica 3 de Carver)."""
+    mode = info.get("capital_mode", "fixed")
+    if mode == "fixed":
+        return
+    equity = info["final_equity"]        # riqueza total = cuenta + retirado
+    skimmed = info["skimmed"]
+    print(f"\n  Cash management (modo '{mode}', freq {info.get('compound_freq')}):")
+    print(f"    Capital inicial           : {capital:>14,.0f}")
+    print(f"    Capital de sizing final   : {info['final_capital']:>14,.0f}")
+    if mode == "half":
+        print(f"    High watermark            : {info.get('high_watermark', capital):>14,.0f}")
+        print(f"    Valor total (cuenta+skim) : {equity:>14,.0f}")
+        print(f"      En cuenta               : {equity - skimmed:>14,.0f}")
+        print(f"      Retirado (skim/bolsillo): {skimmed:>14,.0f}")
+    else:  # full
+        print(f"    Valor de cuenta final     : {equity:>14,.0f}")
+    factor = equity / capital if capital else 0.0
+    print(f"    Crecimiento del capital   : {factor:>13.2f}x  (vs capital fijo)")
 
 
 def print_pnl_split(split, label="Estrategia"):

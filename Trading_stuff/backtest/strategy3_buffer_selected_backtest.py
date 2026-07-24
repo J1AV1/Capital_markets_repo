@@ -59,13 +59,16 @@ def run_strategy3(
     round_positions=True,
     buffer=True,
     buffer_frac=0.1,
+    capital_mode="fixed",
+    compound_freq="monthly",
+    high_watermark=None,
     start_date=None,
     end_date=None,
 ):
     """
     Ejecuta el backtest de la estrategia 3 para un símbolo.
 
-    :param capital: capital nocional fijo (no compuesto, estilo Carver).
+    :param capital: capital nocional inicial.
     :param target_risk: riesgo objetivo anual (Carver sugiere 0.10 para 1 instrumento).
     :param multiplier: multiplicador del contrato (1 para acciones).
     :param span: span del EWMA de volatilidad (32 = lambda ~0.06).
@@ -73,7 +76,9 @@ def run_strategy3(
     :param round_positions: redondear la posición a entero (True) o dejar fraccional.
     :param buffer: aplicar banda de no-negociación de Carver (cap. 8) para reducir costos.
     :param buffer_frac: ancho de la banda como fracción de N (0.1 = recomendado).
-    :return: pd.DataFrame con price, returns, sigma, optimal, position, pnl, ret_pct, cum_ret.
+    :param capital_mode: 'fixed' | 'full' | 'half' (cash management, Tactica 3 de Carver).
+    :param compound_freq: 'daily' | 'weekly' | 'monthly' (cada cuánto se compone el capital).
+    :return: pd.DataFrame con price, returns, sigma, position, pnl, ret_pct, cum_ret, bench_*.
     """
     price = load_prices(symbol, start_date=start_date, end_date=end_date)
     returns = price.pct_change()
@@ -82,7 +87,33 @@ def run_strategy3(
     sigma_daily = utils.blended_daily_vol(returns, span=span, long_window_years=long_window_years)
     sigma_annual = utils.annualise_vol(sigma_daily)
 
-    # Posición óptima según el precio y la volatilidad de HOY
+    if capital_mode != "fixed":
+        # --- Capital compuesto: simulacion forward (Tactica 3) ---
+        portfolio, per, info = utils.simulate_capital(
+            {symbol: price}, {symbol: sigma_annual}, {symbol: 1.0}, idm=1.0,
+            target_risk=target_risk, capital=capital, buffer_frac=buffer_frac,
+            round_positions=round_positions, multiplier=multiplier,
+            capital_mode=capital_mode, compound_freq=compound_freq,
+            high_watermark=high_watermark,
+        )
+        df = pd.DataFrame({
+            "price": price,
+            "returns": returns,
+            "sigma_annual": sigma_annual,
+            "position": per[symbol]["position"],
+        })
+        df["pnl"] = portfolio["pnl"]
+        df["ret_pct"] = portfolio["ret_pct"]
+        df["capital"] = portfolio["capital"]
+        df["equity"] = portfolio["equity"]
+        df["bench_ret"] = utils.buy_and_hold_returns(price)
+        df = df.dropna(subset=["position"])
+        df["cum_ret"] = df["ret_pct"].cumsum()
+        df["bench_cum"] = df["bench_ret"].cumsum()
+        df.attrs["compound_info"] = info
+        return df
+
+    # --- Capital fijo (no compuesto) ---
     optimal = utils.position_size(
         capital=capital,
         target_risk=target_risk,
@@ -90,8 +121,6 @@ def run_strategy3(
         sigma_annual=sigma_annual,
         multiplier=multiplier,
     )
-
-    # Posición realmente mantenida: con banda de no-negociación o rebalanceo directo
     if buffer:
         position = utils.apply_buffer(optimal, buffer_frac=buffer_frac, round_positions=round_positions)
     else:
@@ -155,6 +184,12 @@ def main():
     parser.add_argument("--no_round", action="store_true", help="No redondear posiciones (permite fraccional).")
     parser.add_argument("--no_buffer", action="store_true", help="Desactivar la banda de no-negociación (rebalanceo diario).")
     parser.add_argument("--buffer_frac", type=float, default=0.1, help="Ancho de la banda como fracción de N (0.1 default).")
+    parser.add_argument("--capital_mode", choices=["fixed", "full", "half"], default="fixed",
+                        help="Cash management (Carver Tactica 3): fixed / full / half compounding.")
+    parser.add_argument("--compound_freq", choices=["daily", "weekly", "monthly"], default="monthly",
+                        help="Frecuencia de actualización del capital compuesto.")
+    parser.add_argument("--high_watermark", type=float, default=None,
+                        help="High watermark del modo 'half' (default = capital inicial).")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar gráficos.")
@@ -169,6 +204,9 @@ def main():
         round_positions=not args.no_round,
         buffer=not args.no_buffer,
         buffer_frac=args.buffer_frac,
+        capital_mode=args.capital_mode,
+        compound_freq=args.compound_freq,
+        high_watermark=args.high_watermark,
         start_date=args.start,
         end_date=args.end,
     )
@@ -183,6 +221,9 @@ def main():
 
     split = utils.realized_unrealized_pnl(df["price"], df["position"])
     utils.print_pnl_split(split, label="Estrategia 3")
+
+    if "compound_info" in df.attrs:
+        utils.print_compound_summary(df.attrs["compound_info"], args.capital)
 
     if args.plot:
         plot_results(df, args.symbol, args.target_risk)

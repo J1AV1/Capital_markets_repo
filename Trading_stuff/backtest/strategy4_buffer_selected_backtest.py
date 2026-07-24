@@ -86,11 +86,17 @@ def run_strategy4(
     round_positions=True,
     buffer=True,
     buffer_frac=0.1,
+    capital_mode="fixed",
+    compound_freq="monthly",
+    high_watermark=None,
     start_date=None,
     end_date=None,
 ):
     """
     Ejecuta el backtest de la estrategia 4 (portafolio) sobre una lista de simbolos.
+
+    capital_mode: 'fixed' | 'full' | 'half' (cash management, Tactica 3 de Carver).
+    compound_freq: 'daily' | 'weekly' | 'monthly'.
 
     :param symbols: lista de simbolos (deben existir en la BD).
     :param capital: capital nocional total del portafolio.
@@ -126,36 +132,56 @@ def run_strategy4(
     if idm is None:
         idm = utils.compute_idm(sub_returns, weights)
 
-    # --- Paso 3: recalcular sub-estrategias con el IDM final (aplicando buffer) ---
-    per_instrument = {}
-    for sym in symbols:
-        per_instrument[sym] = _sub_strategy(
-            sym, capital, target_risk, weights[sym], idm=idm, multiplier=multiplier,
-            span=span, long_window_years=long_window_years,
-            round_positions=round_positions, start_date=start_date, end_date=end_date,
-            buffer=buffer, buffer_frac=buffer_frac,
+    compound_info = None
+    if capital_mode != "fixed":
+        # --- Capital compuesto: simulacion forward del portafolio (Tactica 3) ---
+        prices = {sym: base[sym]["price"] for sym in symbols}
+        sigmas = {sym: base[sym]["sigma_annual"] for sym in symbols}
+        portfolio, per_instrument, compound_info = utils.simulate_capital(
+            prices, sigmas, weights, idm, target_risk, capital,
+            buffer_frac=buffer_frac, round_positions=round_positions, multiplier=multiplier,
+            capital_mode=capital_mode, compound_freq=compound_freq,
+            high_watermark=high_watermark,
         )
+        prices_bh = {sym: per_instrument[sym]["price"] for sym in symbols}
+        portfolio["bench_ret"] = utils.buy_and_hold_returns(prices_bh, weights)
+        portfolio = portfolio.dropna(subset=["ret_pct"])
+        portfolio["cum_ret"] = portfolio["ret_pct"].cumsum()
+        portfolio["bench_cum"] = portfolio["bench_ret"].cumsum()
+    else:
+        # --- Paso 3: recalcular sub-estrategias con el IDM final (aplicando buffer) ---
+        per_instrument = {}
+        for sym in symbols:
+            per_instrument[sym] = _sub_strategy(
+                sym, capital, target_risk, weights[sym], idm=idm, multiplier=multiplier,
+                span=span, long_window_years=long_window_years,
+                round_positions=round_positions, start_date=start_date, end_date=end_date,
+                buffer=buffer, buffer_frac=buffer_frac,
+            )
 
-    # --- Paso 4: agregar P&L del portafolio ---
-    pnl = pd.DataFrame({sym: per_instrument[sym]["pnl"] for sym in symbols})
-    portfolio_pnl = pnl.sum(axis=1, min_count=1)
-    portfolio = pd.DataFrame({"pnl": portfolio_pnl})
-    portfolio["ret_pct"] = portfolio["pnl"] / capital
+        # --- Paso 4: agregar P&L del portafolio ---
+        pnl = pd.DataFrame({sym: per_instrument[sym]["pnl"] for sym in symbols})
+        portfolio_pnl = pnl.sum(axis=1, min_count=1)
+        portfolio = pd.DataFrame({"pnl": portfolio_pnl})
+        portfolio["ret_pct"] = portfolio["pnl"] / capital
 
-    # --- Benchmark: buy & hold 100% invertido con los MISMOS pesos ---
-    prices = {sym: per_instrument[sym]["price"] for sym in symbols}
-    portfolio["bench_ret"] = utils.buy_and_hold_returns(prices, weights)
+        # --- Benchmark: buy & hold 100% invertido con los MISMOS pesos ---
+        prices = {sym: per_instrument[sym]["price"] for sym in symbols}
+        portfolio["bench_ret"] = utils.buy_and_hold_returns(prices, weights)
 
-    portfolio = portfolio.dropna(subset=["ret_pct"])
-    portfolio["cum_ret"] = portfolio["ret_pct"].cumsum()
-    portfolio["bench_cum"] = portfolio["bench_ret"].cumsum()
+        portfolio = portfolio.dropna(subset=["ret_pct"])
+        portfolio["cum_ret"] = portfolio["ret_pct"].cumsum()
+        portfolio["bench_cum"] = portfolio["bench_ret"].cumsum()
 
     # Stats por instrumento (sobre su contribucion al portafolio total)
     per_stats = {}
     for sym in symbols:
-        per_stats[sym] = utils.performance_stats(per_instrument[sym]["ret_pct"], capital=capital)
+        sub = per_instrument[sym]
+        if "ret_pct" in sub.columns:
+            per_stats[sym] = utils.performance_stats(sub["ret_pct"], capital=capital)
 
-    meta = {"weights": weights, "idm": idm, "per_stats": per_stats, "n": len(symbols)}
+    meta = {"weights": weights, "idm": idm, "per_stats": per_stats, "n": len(symbols),
+            "compound_info": compound_info}
     return portfolio, per_instrument, meta
 
 
@@ -198,6 +224,12 @@ def main():
     parser.add_argument("--no_round", action="store_true", help="No redondear posiciones (permite fraccional).")
     parser.add_argument("--no_buffer", action="store_true", help="Desactivar la banda de no-negociación (rebalanceo diario).")
     parser.add_argument("--buffer_frac", type=float, default=0.1, help="Ancho de la banda como fracción de N (0.1 default).")
+    parser.add_argument("--capital_mode", choices=["fixed", "full", "half"], default="fixed",
+                        help="Cash management (Carver Tactica 3): fixed / full / half compounding.")
+    parser.add_argument("--compound_freq", choices=["daily", "weekly", "monthly"], default="monthly",
+                        help="Frecuencia de actualización del capital compuesto.")
+    parser.add_argument("--high_watermark", type=float, default=None,
+                        help="High watermark del modo 'half' (default = capital inicial).")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar graficos.")
@@ -217,6 +249,9 @@ def main():
         round_positions=not args.no_round,
         buffer=not args.no_buffer,
         buffer_frac=args.buffer_frac,
+        capital_mode=args.capital_mode,
+        compound_freq=args.compound_freq,
+        high_watermark=args.high_watermark,
         start_date=args.start,
         end_date=args.end,
     )
@@ -241,6 +276,9 @@ def main():
         for k in agg:
             agg[k] += split[k]
     utils.print_pnl_split(agg, label="Estrategia 4")
+
+    if meta.get("compound_info"):
+        utils.print_compound_summary(meta["compound_info"], args.capital)
 
     if args.plot:
         plot_results(portfolio, per_instrument, args.target_risk, meta["idm"])
