@@ -1,14 +1,15 @@
 """
-Backtest de la Estrategia 4 de Carver (Advanced Futures Trading Strategies):
-Buy and hold de un PORTAFOLIO de instrumentos, cada uno con sizing de posicion
-escalado por riesgo variable (strategy three) + pesos de instrumento + IDM.
+VolTarget Portfolio: backtest de un PORTAFOLIO de instrumentos, cada uno con sizing
+escalado por volatilidad objetivo (VolTarget Single) + pesos de instrumento + IDM.
+Inspirado en las ideas de Carver (Advanced Futures Trading Strategies), con
+implementación y ajustes propios (pesos ERC por defecto, cash management, buffer).
 
 Adaptado a acciones individuales (multiplier=1). Lee precios desde la BD SQLite
 centralizada (Portfolio_stuff/data/market_data.db).
 
-Idea de la estrategia:
-  1. Cada instrumento se opera como una sub-estrategia = strategy three.
-  2. Se le asigna un peso (weight_i). Por defecto pesos iguales (1/N).
+Idea:
+  1. Cada instrumento se opera como una sub-estrategia = VolTarget Single.
+  2. Se le asigna un peso (weight_i). Por defecto ERC (equal risk contribution).
   3. La posicion se escala por el peso y por el IDM (Instrument Diversification
      Multiplier), que recupera el riesgo "perdido" por diversificacion:
          N_i = (Capital * IDM * weight_i * target_risk) / (price_i * sigma_i%)
@@ -17,9 +18,9 @@ Idea de la estrategia:
   5. P&L del portafolio = suma de P&L de cada sub-estrategia.
 
 Uso:
-  python strategy4_backtest.py                       # todos los simbolos de la BD
-  python strategy4_backtest.py --symbols SPY NVDA GOOG --capital 100000
-  python strategy4_backtest.py --target_risk 0.20 --no_round --plot
+  python voltarget_portfolio_backtest.py                       # todos los simbolos de la BD
+  python voltarget_portfolio_backtest.py --symbols SPY NVDA GOOG --capital 100000
+  python voltarget_portfolio_backtest.py --target_risk 0.20 --no_round --plot
 """
 import os
 import sys
@@ -29,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 import Utils_function_backtest as utils
-from Trading_stuff.backtest.strategy3_buffer_selected_backtest import load_prices
+from Trading_stuff.backtest.voltarget_single_backtest import load_prices
 
 # Acceso a la BD centralizada en Portfolio_stuff/data
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -44,7 +45,7 @@ def _sub_strategy(symbol, capital, target_risk, weight, idm, multiplier,
                   span, long_window_years, round_positions, start_date, end_date,
                   buffer=True, buffer_frac=0.1):
     """
-    Calcula la sub-estrategia (strategy three con peso + IDM) para un simbolo.
+    Calcula la sub-estrategia (VolTarget Single con peso + IDM) para un simbolo.
 
     :return: DataFrame con price, sigma_annual, position, pnl, ret_pct.
     """
@@ -74,7 +75,7 @@ def _sub_strategy(symbol, capital, target_risk, weight, idm, multiplier,
     return df.dropna(subset=["position"])
 
 
-def run_strategy4(
+def run_voltarget_portfolio(
     symbols,
     capital=100_000.0,
     target_risk=0.20,
@@ -94,16 +95,17 @@ def run_strategy4(
     end_date=None,
 ):
     """
-    Ejecuta el backtest de la estrategia 4 (portafolio) sobre una lista de simbolos.
+    Ejecuta el backtest VolTarget Portfolio sobre una lista de simbolos.
 
-    capital_mode: 'fixed' | 'full' | 'half' (cash management, Tactica 3 de Carver).
+    weight_mode: 'erc' (equal risk contribution, default) | 'equal' (1/N).
+    capital_mode: 'fixed' | 'full' | 'half' (cash management / compounding).
     compound_freq: 'daily' | 'weekly' | 'monthly'.
 
     :param symbols: lista de simbolos (deben existir en la BD).
     :param capital: capital nocional total del portafolio.
-    :param target_risk: riesgo objetivo anual del portafolio (Carver: 0.20 con
-                        >=1 instrumento por clase de activo; menos si es concentrado).
-    :param weights: dict {symbol: peso}. None = pesos iguales (1/N).
+    :param target_risk: riesgo objetivo anual del portafolio (0.20 con >=1
+                        instrumento por clase de activo; menos si es concentrado).
+    :param weights: dict {symbol: peso}. None = derivar segun weight_mode.
     :param idm: IDM a usar. None = calcularlo desde las correlaciones.
     :param round_positions: redondear posiciones (True) o permitir fraccional.
     :return: (portfolio_df, per_instrument, meta)
@@ -202,10 +204,10 @@ def plot_results(portfolio, per_instrument, target_risk, idm):
     # Curvas individuales (tenues) + portafolio agregado
     for sym, sub in per_instrument.items():
         axes[0].plot(sub.index, sub["ret_pct"].cumsum() * 100, lw=0.8, alpha=0.4)
-    axes[0].plot(portfolio.index, portfolio["cum_ret"] * 100, color="black", lw=2, label="Estrategia 4")
+    axes[0].plot(portfolio.index, portfolio["cum_ret"] * 100, color="black", lw=2, label="VolTarget Portfolio")
     axes[0].plot(portfolio.index, portfolio["bench_cum"] * 100, color="tab:red", lw=1.5, ls="--", label="Buy & Hold (mismos pesos)")
     axes[0].set_ylabel("Retorno acum. (%)")
-    axes[0].set_title(f"Estrategia 4 - Portafolio (target {target_risk:.0%}, IDM {idm:.2f})")
+    axes[0].set_title(f"VolTarget Portfolio (target {target_risk:.0%}, IDM {idm:.2f})")
     axes[0].legend(loc="upper left")
     axes[0].grid(alpha=0.3)
 
@@ -222,7 +224,7 @@ def plot_results(portfolio, per_instrument, target_risk, idm):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest Estrategia 4 (Carver) - portafolio de acciones.")
+    parser = argparse.ArgumentParser(description="VolTarget Portfolio: backtest de portafolio (sizing por volatilidad, pesos ERC, IDM).")
     parser.add_argument("--symbols", nargs="+", default=None,
                         help="Simbolos del portafolio. Por defecto: todos los de la BD.")
     parser.add_argument("--capital", type=float, default=100_000.0, help="Capital nocional total.")
@@ -250,7 +252,7 @@ def main():
     if symbols is None:
         symbols = [s for s in db.get_all_symbols() if s != "ALL"]
 
-    portfolio, per_instrument, meta = run_strategy4(
+    portfolio, per_instrument, meta = run_voltarget_portfolio(
         symbols=symbols,
         capital=args.capital,
         target_risk=args.target_risk,
@@ -281,8 +283,8 @@ def main():
     print(f"IDM                  : {meta['idm']:.3f}")
     utils.print_stats_comparison(
         stats, bench_stats,
-        title=f"Estrategia 4 vs Buy & Hold - Portafolio ({meta['n']} instrumentos)",
-        label_strat="Estrategia 4", label_bench="Buy & Hold",
+        title=f"VolTarget Portfolio vs Buy & Hold - Portafolio ({meta['n']} instrumentos)",
+        label_strat="VolTarget Portfolio", label_bench="Buy & Hold",
     )
 
     # Desglose realizado / no realizado agregando todos los instrumentos
@@ -293,7 +295,7 @@ def main():
         split = utils.realized_unrealized_pnl(sub["price"], sub["position"])
         for k in agg:
             agg[k] += split[k]
-    utils.print_pnl_split(agg, label="Estrategia 4")
+    utils.print_pnl_split(agg, label="VolTarget Portfolio")
 
     if meta.get("compound_info"):
         utils.print_compound_summary(meta["compound_info"], args.capital)

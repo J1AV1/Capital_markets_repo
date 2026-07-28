@@ -1,19 +1,20 @@
 """
-Backtest de la Estrategia 3 de Carver (Advanced Futures Trading Strategies):
-Buy and hold con sizing de posición escalado por riesgo variable.
+VolTarget Single: backtest de un instrumento con sizing de posición escalado por
+volatilidad objetivo. Inspirado en las ideas de Carver (Advanced Futures Trading
+Strategies) pero con implementación y ajustes propios.
 
 Adaptado a acciones individuales (multiplier=1, sin rolling ni back-adjustment).
 Lee precios desde la BD SQLite centralizada (Portfolio_stuff/data/market_data.db).
 
-Idea de la estrategia:
+Idea:
   1. Estimar la volatilidad diaria con un EWMA mezclado (corto 70% + largo 30%).
   2. Anualizar (x16) para obtener sigma_%.
   3. Posición óptima diaria: N = (Capital * target_risk) / (price * sigma_%).
-  4. Rebalancear cada día al N redondeado; P&L = N_{t-1} * (P_t - P_{t-1}).
+  4. Rebalancear al N objetivo (con banda de no-negociación); P&L = N_{t-1} * (P_t - P_{t-1}).
 
 Uso:
-  python strategy3_backtest.py --symbol SPY --capital 100000 --target_risk 0.10
-  python strategy3_backtest.py --symbol NVDA --plot
+  python voltarget_single_backtest.py --symbol SPY --capital 100000 --target_risk 0.10
+  python voltarget_single_backtest.py --symbol NVDA --plot
 """
 import os
 import sys
@@ -49,7 +50,7 @@ def load_prices(symbol, start_date=None, end_date=None):
     return series
 
 
-def run_strategy3(
+def run_voltarget_single(
     symbol,
     capital=100_000.0,
     target_risk=0.10,
@@ -66,7 +67,7 @@ def run_strategy3(
     end_date=None,
 ):
     """
-    Ejecuta el backtest de la estrategia 3 para un símbolo.
+    Ejecuta el backtest VolTarget Single para un símbolo.
 
     :param capital: capital nocional inicial.
     :param target_risk: riesgo objetivo anual (Carver sugiere 0.10 para 1 instrumento).
@@ -153,10 +154,10 @@ def plot_results(df, symbol, target_risk):
 
     fig, axes = plt.subplots(3, 1, figsize=(11, 9), sharex=True)
 
-    axes[0].plot(df.index, df["cum_ret"] * 100, color="tab:blue", label="Estrategia 3")
+    axes[0].plot(df.index, df["cum_ret"] * 100, color="tab:blue", label="VolTarget Single")
     axes[0].plot(df.index, df["bench_cum"] * 100, color="tab:grey", lw=1, ls="--", label="Buy & Hold")
     axes[0].set_ylabel("Retorno acum. (%)")
-    axes[0].set_title(f"Estrategia 3 - {symbol} (target risk {target_risk:.0%})")
+    axes[0].set_title(f"VolTarget Single - {symbol} (target risk {target_risk:.0%})")
     axes[0].legend(loc="upper left")
     axes[0].grid(alpha=0.3)
 
@@ -175,7 +176,7 @@ def plot_results(df, symbol, target_risk):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backtest Estrategia 3 (Carver) sobre acciones.")
+    parser = argparse.ArgumentParser(description="VolTarget Single: backtest de un instrumento (sizing por volatilidad objetivo).")
     parser.add_argument("--symbol", default="SPY", help="Símbolo a backtestear (debe existir en la BD).")
     parser.add_argument("--capital", type=float, default=100_000.0, help="Capital nocional.")
     parser.add_argument("--target_risk", type=float, default=0.10, help="Riesgo objetivo anual (ej. 0.10).")
@@ -195,7 +196,7 @@ def main():
     parser.add_argument("--plot", action="store_true", help="Mostrar gráficos.")
     args = parser.parse_args()
 
-    df = run_strategy3(
+    df = run_voltarget_single(
         symbol=args.symbol,
         capital=args.capital,
         target_risk=args.target_risk,
@@ -215,12 +216,12 @@ def main():
     bench_stats = utils.performance_stats(df["bench_ret"], capital=args.capital)
     utils.print_stats_comparison(
         stats, bench_stats,
-        title=f"Estrategia 3 vs Buy & Hold - {args.symbol}",
-        label_strat="Estrategia 3", label_bench="Buy & Hold",
+        title=f"VolTarget Single vs Buy & Hold - {args.symbol}",
+        label_strat="VolTarget Single", label_bench="Buy & Hold",
     )
 
     split = utils.realized_unrealized_pnl(df["price"], df["position"])
-    utils.print_pnl_split(split, label="Estrategia 3")
+    utils.print_pnl_split(split, label="VolTarget Single")
 
     if "compound_info" in df.attrs:
         utils.print_compound_summary(df.attrs["compound_info"], args.capital)
