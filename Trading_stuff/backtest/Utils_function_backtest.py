@@ -127,7 +127,7 @@ def _period_key(d, freq):
 def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
                      buffer_frac=0.1, round_positions=False, multiplier=1.0,
                      capital_mode="full", compound_freq="monthly",
-                     high_watermark=None):
+                     high_watermark=None, forecasts=None):
     """
     Simulacion forward con capital compuesto (Carver, Tactica 3: cash & compounding).
 
@@ -168,6 +168,12 @@ def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
     S = sigma_df.to_numpy(dtype=float)
     w = np.array([weights[s] for s in syms], dtype=float)
     m = len(syms)
+
+    # Forecast por instrumento (Estrategia 9). None -> factor 1 (siempre largo pleno).
+    if forecasts is not None:
+        F = pd.DataFrame({s: forecasts[s] for s in syms}).reindex(price_df.index).to_numpy(dtype=float)
+    else:
+        F = None
 
     held = np.zeros(m)
     prev_price = np.full(m, np.nan)
@@ -215,6 +221,12 @@ def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
                     prev_price[j] = p
                 continue
             opt = notional * idm * w[j] * target_risk / (p * multiplier * sig)
+            if F is not None:                       # escalar por el forecast (Estrategia 9)
+                fc = F[t, j]
+                if np.isnan(fc):
+                    opt = 0.0
+                else:
+                    opt = opt * fc / 10.0
             band = buffer_frac * abs(opt)
             lower, upper = opt - band, opt + band
             if round_positions:
@@ -320,6 +332,118 @@ def position_size(capital, target_risk, price, sigma_annual,
     notional_exposure = multiplier * price * fx
     risk_per_contract = notional_exposure * sigma_annual
     return (capital * idm * weight * target_risk) / risk_per_contract
+
+
+# ---------------------------------------------------------------------------
+# Trend following (strategy nine): forecasts EWMAC modulares
+# ---------------------------------------------------------------------------
+
+# Forecast scalars de referencia de Carver (Tabla 29), EWMAC(n, 4n). Solo para
+# comparar: por defecto el scalar se ESTIMA de los datos (backward-looking).
+FORECAST_SCALARS_REF = {2: 12.1, 4: 8.53, 8: 5.95, 16: 4.10, 32: 2.79, 64: 1.91}
+FORECAST_CAP = 20.0
+
+
+def estimate_forecast_scalar(raw, target_abs=10.0, min_periods=25):
+    """
+    Estima el forecast scalar propio, backward-looking (sin look-ahead):
+        scalar_t = target_abs / media_expandida(|raw| hasta t)
+
+    Lleva el valor absoluto medio del forecast a `target_abs` (10 por convencion).
+    Usa una media expandida de |raw| con todo el historial disponible hasta cada
+    fecha, por lo que no usa informacion futura.
+    """
+    return target_abs / raw.abs().expanding(min_periods=min_periods).mean()
+
+
+def ewmac_raw_forecast(price, sigma_annual, fast_span, slow_ratio=4):
+    """
+    Forecast crudo (risk-normalized) de un cruce de medias EWMAC(n, ratio*n).
+
+        crossover = EWMA(n) - EWMA(ratio*n)
+        raw = crossover / (price * sigma_annual / 16)   # vol diaria en puntos de precio
+
+    :param price: pd.Series de precios.
+    :param sigma_annual: pd.Series de volatilidad anualizada (%).
+    :param fast_span: span de la EWMA rapida (n).
+    :param slow_ratio: razon slow/fast (4 por defecto -> EWMAC(n, 4n)).
+    :return: pd.Series del forecast crudo.
+    """
+    slow_span = slow_ratio * fast_span
+    fast = price.ewm(span=fast_span, min_periods=fast_span).mean()
+    slow = price.ewm(span=slow_span, min_periods=slow_span).mean()
+    crossover = fast - slow
+    sigma_price_daily = price * sigma_annual / ANNUALISATION
+    return crossover / sigma_price_daily
+
+
+def capped_forecast(raw, scalar, cap=FORECAST_CAP):
+    """Escala el forecast crudo y lo capa a +/- cap. `scalar` puede ser float o Series."""
+    return (raw * scalar).clip(-cap, cap)
+
+
+def compute_fdm(forecast_df, weights):
+    """
+    Forecast Diversification Multiplier: FDM = 1 / sqrt(w . rho . w^T), con rho la
+    correlacion entre los forecasts capeados de los distintos filtros. Analogo al IDM.
+    """
+    corr = forecast_df.corr()
+    keys = list(corr.columns)
+    w = np.array([weights[k] for k in keys], dtype=float)
+    C = np.nan_to_num(corr.to_numpy(dtype=float), nan=0.0)
+    np.fill_diagonal(C, 1.0)
+    var = float(w @ C @ w)
+    if var <= 0:
+        return 1.0
+    return 1.0 / np.sqrt(var)
+
+
+def combined_trend_forecast(price, sigma_annual, speeds, forecast_weights=None,
+                            fdm=None, cap=FORECAST_CAP, long_only=True, slow_ratio=4,
+                            forecast_scalars=None, scalar_min_periods=25):
+    """
+    Forecast combinado de multiples filtros EWMAC (Estrategia 9 de Carver).
+
+    1. Por cada speed n: forecast crudo -> escalado -> capeado (+/- cap).
+       El forecast scalar se ESTIMA de los datos (backward-looking) salvo que se
+       pase uno fijo en `forecast_scalars`.
+    2. Promedio ponderado (forecast_weights, por defecto iguales).
+    3. Aplica el FDM, calculado por nosotros desde la correlacion de los filtros
+       (o el valor pasado en `fdm`).
+    4. Re-capea a +/- cap.
+    5. long_only=True: piso en 0 (forecast<=0 -> 0 -> posicion cerrada).
+
+    :param speeds: lista de spans rapidos (ej. [16, 32, 64] = EWMAC16/32/64).
+    :param forecast_scalars: dict {span: scalar} para forzar valores fijos; None = estimar.
+    :return: (combined_forecast Series, fdm_usado, forecast_df por filtro).
+    """
+    caps = {}
+    for n in speeds:
+        raw = ewmac_raw_forecast(price, sigma_annual, n, slow_ratio=slow_ratio)
+        if forecast_scalars is not None and n in forecast_scalars:
+            scalar = forecast_scalars[n]
+        else:
+            scalar = estimate_forecast_scalar(raw, min_periods=scalar_min_periods)
+        caps[f"EWMAC{n}"] = capped_forecast(raw, scalar, cap)
+
+    fdf = pd.DataFrame(caps)
+    keys = list(fdf.columns)
+    if forecast_weights is None:
+        fw = {k: 1.0 / len(keys) for k in keys}
+    else:
+        fw = forecast_weights
+
+    valid = fdf.dropna()
+    wvec = np.array([fw[k] for k in keys], dtype=float)
+    combined = (valid[keys] * wvec).sum(axis=1)
+
+    fdm_val = compute_fdm(valid, fw) if fdm is None else float(fdm)
+    combined = (combined * fdm_val).clip(-cap, cap)
+    if long_only:
+        combined = combined.clip(lower=0.0)
+
+    combined = combined.reindex(price.index)
+    return combined, fdm_val, fdf
 
 
 # ---------------------------------------------------------------------------
