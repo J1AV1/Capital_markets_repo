@@ -79,6 +79,7 @@ def run_strategy4(
     capital=100_000.0,
     target_risk=0.20,
     weights=None,
+    weight_mode="erc",
     idm=None,
     multiplier=1.0,
     span=32,
@@ -114,21 +115,29 @@ def run_strategy4(
     if not symbols:
         raise ValueError("No se especificaron simbolos.")
 
-    if weights is None:
-        weights = utils.equal_weights(symbols)
+    # Pesos base (iguales) para la pasada de correlaciones; la correlacion es
+    # invariante al peso (escalar por columna), asi que sirven para derivar ERC.
+    base_weights = utils.equal_weights(symbols)
 
     # --- Paso 1: sub-estrategias base (posiciones ideales sin buffer) para correlaciones ---
     base = {}
     for sym in symbols:
         base[sym] = _sub_strategy(
-            sym, capital, target_risk, weights[sym], idm=1.0, multiplier=multiplier,
+            sym, capital, target_risk, base_weights[sym], idm=1.0, multiplier=multiplier,
             span=span, long_window_years=long_window_years,
             round_positions=False, start_date=start_date, end_date=end_date,
             buffer=False,
         )
 
-    # --- Paso 2: IDM desde la correlacion de las sub-estrategias ---
+    # --- Paso 2: pesos de instrumento ---
     sub_returns = pd.DataFrame({sym: base[sym]["ret_pct"] for sym in symbols})
+    if weights is None:
+        if weight_mode == "erc":
+            weights = utils.erc_weights(sub_returns)   # Equal Risk Contribution
+        else:
+            weights = base_weights                     # iguales
+
+    # --- IDM desde la correlacion de las sub-estrategias (con los pesos finales) ---
     if idm is None:
         idm = utils.compute_idm(sub_returns, weights)
 
@@ -218,6 +227,8 @@ def main():
                         help="Simbolos del portafolio. Por defecto: todos los de la BD.")
     parser.add_argument("--capital", type=float, default=100_000.0, help="Capital nocional total.")
     parser.add_argument("--target_risk", type=float, default=0.20, help="Riesgo objetivo anual del portafolio.")
+    parser.add_argument("--weight_mode", choices=["erc", "equal"], default="erc",
+                        help="Pesos de instrumento: 'erc' (equal risk contribution, default) o 'equal' (1/N).")
     parser.add_argument("--idm", type=float, default=None, help="IDM fijo (None = calcular por correlacion).")
     parser.add_argument("--span", type=int, default=32, help="Span del EWMA de volatilidad.")
     parser.add_argument("--long_window_years", type=int, default=10, help="Anos de la ventana movil de la vol larga.")
@@ -243,6 +254,7 @@ def main():
         symbols=symbols,
         capital=args.capital,
         target_risk=args.target_risk,
+        weight_mode=args.weight_mode,
         idm=args.idm,
         span=args.span,
         long_window_years=args.long_window_years,
@@ -259,7 +271,13 @@ def main():
     stats = utils.performance_stats(portfolio["ret_pct"], capital=args.capital)
     bench_stats = utils.performance_stats(portfolio["bench_ret"], capital=args.capital)
     print(f"\nInstrumentos ({meta['n']}): {', '.join(symbols)}")
-    print(f"Peso por instrumento : {1.0 / meta['n']:.2%} (iguales)")
+    print(f"Modo de pesos        : {args.weight_mode}")
+    if args.weight_mode == "erc":
+        print("Pesos por instrumento (ERC):")
+        for sym in sorted(meta["weights"], key=lambda s: -meta["weights"][s]):
+            print(f"    {sym:6s}: {meta['weights'][sym]:6.2%}")
+    else:
+        print(f"Peso por instrumento : {1.0 / meta['n']:.2%} (iguales)")
     print(f"IDM                  : {meta['idm']:.3f}")
     utils.print_stats_comparison(
         stats, bench_stats,

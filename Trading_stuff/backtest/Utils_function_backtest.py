@@ -380,6 +380,52 @@ def equal_weights(symbols):
     return {s: 1.0 / n for s in symbols} if n else {}
 
 
+def erc_weights(sub_returns, max_iter=100_000, tol=1e-12):
+    """
+    Pesos de Equal Risk Contribution (risk parity real): cada instrumento aporta
+    la misma contribucion a la volatilidad del portafolio, ajustando por la
+    correlacion entre sub-estrategias.
+
+    Como las sub-estrategias ya estan escaladas a la misma volatilidad individual,
+    se usa la matriz de correlacion (vols equivalentes) como matriz de riesgo. El
+    efecto: baja el peso de los clusters correlacionados (p.ej. equities) y sube el
+    de los instrumentos diversificadores (p.ej. commodities).
+
+    Contribucion de riesgo:  RC_i = w_i * (rho w)_i / (w^T rho w)   (suman 1).
+    Objetivo ERC:            RC_i = 1/N para todo i.
+
+    :param sub_returns: pd.DataFrame de retornos diarios por sub-estrategia.
+    :return: dict {symbol: peso} (suman 1).
+    """
+    corr = sub_returns.corr()
+    syms = list(corr.columns)
+    n = len(syms)
+    if n == 0:
+        return {}
+    C = np.nan_to_num(corr.to_numpy(dtype=float), nan=0.0)
+    np.fill_diagonal(C, 1.0)
+
+    w = np.ones(n) / n
+    target = 1.0 / n
+    for _ in range(max_iter):
+        Cw = C @ w
+        port_var = float(w @ Cw)
+        if port_var <= 0:
+            break
+        rc = w * Cw / port_var
+        if np.abs(rc - target).max() < tol:
+            break
+        # Actualizacion multiplicativa con damping sqrt (estable para ~decenas de activos)
+        w = w * np.sqrt(target / np.where(rc < 1e-16, 1e-16, rc))
+        w = np.maximum(w, 0.0)
+        s = w.sum()
+        if s <= 0:
+            w = np.ones(n) / n
+        else:
+            w = w / s
+    return {s: float(w[i]) for i, s in enumerate(syms)}
+
+
 def buy_and_hold_returns(prices, weights=None):
     """
     Retornos diarios del benchmark BUY & HOLD, 100% invertido, usando los
