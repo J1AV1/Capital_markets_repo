@@ -10,3 +10,7 @@ __pycache__/
 
 # Credenciales
 token_store.json
+
+# Estado y logs de ejecucion (demo/live)
+**/execution/state/
+**/execution/logs/
