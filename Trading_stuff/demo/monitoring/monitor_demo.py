@@ -37,7 +37,9 @@ def _load_last_run():
 def _nav_stats():
     if not os.path.exists(cfg.NAV_HISTORY_CSV):
         return None
-    nav = pd.read_csv(cfg.NAV_HISTORY_CSV, parse_dates=["date"]).drop_duplicates("date").set_index("date")["nav"]
+    # keep="last": si hubo varias corridas el mismo dia, usar el NAV mas reciente.
+    nav = (pd.read_csv(cfg.NAV_HISTORY_CSV, parse_dates=["date"])
+           .drop_duplicates("date", keep="last").set_index("date")["nav"])
     if len(nav) < 2:
         return {"nav": float(nav.iloc[-1]), "points": len(nav)}
     ret = nav.pct_change().dropna()
@@ -75,24 +77,30 @@ def main():
     else:
         print("[run]    sin corridas registradas todavia")
 
-    # --- NAV / P&L ---
-    ns = _nav_stats()
-    if ns and "total_ret" in ns:
-        print(f"[nav]    NAV={ns['nav']:,.2f}  ret_total={ns['total_ret']:+.2%}  "
-              f"maxDD={ns['max_dd']:+.2%}  vol_ann~{ns['vol_ann']:.1%} (target {cfg.TARGET_RISK:.0%})  "
-              f"({ns['points']} dias)")
-    elif ns:
-        print(f"[nav]    NAV={ns['nav']:,.2f}  ({ns['points']} dia de historial)")
-
-    # --- Objetivo vs real ---
-    current = None  # None = no conectado ; {} = conectado, cuenta vacia
+    # --- Broker: NAV en vivo + posiciones (una sola conexion) ---
+    current = None      # None = no conectado ; {} = conectado, cuenta vacia
+    live_nav = None
     if not args.no_broker:
         try:
             from broker_ibkr import DemoBroker
             with DemoBroker(readonly=True) as broker:
+                live_nav = broker.net_liquidation()
                 current = broker.positions()
         except Exception as e:
             print(f"[broker] no se pudo conectar: {e}")
+
+    # --- NAV / P&L ---
+    ns = _nav_stats()
+    display_nav = live_nav if live_nav is not None else (ns["nav"] if ns else None)
+    src = "live" if live_nav is not None else "hist"
+    if display_nav is None:
+        print("[nav]    sin NAV disponible")
+    elif ns and "total_ret" in ns:
+        print(f"[nav]    NAV={display_nav:,.2f} ({src})  ret_total={ns['total_ret']:+.2%}  "
+              f"maxDD={ns['max_dd']:+.2%}  vol_ann~{ns['vol_ann']:.1%} (target {cfg.TARGET_RISK:.0%})  "
+              f"({ns['points']} dias hist.)")
+    else:
+        print(f"[nav]    NAV={display_nav:,.2f} ({src})")
 
     if last and last.get("targets"):
         print(f"\n{'sym':6s} {'objetivo':>10s} {'real':>10s} {'desvio':>10s} {'en banda':>9s}")

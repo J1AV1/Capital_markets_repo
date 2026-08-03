@@ -100,11 +100,15 @@ def run_trend_multi(
     capital_mode="fixed",
     compound_freq="monthly",
     high_watermark=None,
+    max_leverage=None,
     start_date=None,
     end_date=None,
 ):
     """
     Ejecuta el backtest Trend Multi (Estrategia 9, long-only) sobre una lista de simbolos.
+
+    :param max_leverage: tope de exposicion bruta como multiplo del capital
+                         (1.0 = sin margen). None = sin tope.
 
     :param speeds: lista de spans rapidos de EWMAC (default [16, 32, 64]).
     :param long_only: si True, forecast<=0 -> posicion 0 (solo largos).
@@ -138,8 +142,10 @@ def run_trend_multi(
         idm = utils.compute_idm(sub_returns, weights)
 
     compound_info = None
-    if capital_mode != "fixed":
-        # --- Capital compuesto: simulacion forward con forecasts ---
+    # Con tope de apalancamiento se usa simulate_capital (lo aplica antes del buffer)
+    # aunque el capital sea fijo (capital_mode="fixed" mantiene el notional constante).
+    if capital_mode != "fixed" or max_leverage is not None:
+        # --- Simulacion forward con forecasts ---
         prices = {s: prep[s]["price"] for s in symbols}
         sigmas = {s: prep[s]["sigma_annual"] for s in symbols}
         forecasts = {s: prep[s]["forecast"] for s in symbols}
@@ -147,7 +153,7 @@ def run_trend_multi(
             prices, sigmas, weights, idm, target_risk, capital,
             buffer_frac=buffer_frac, round_positions=round_positions, multiplier=multiplier,
             capital_mode=capital_mode, compound_freq=compound_freq,
-            high_watermark=high_watermark, forecasts=forecasts,
+            high_watermark=high_watermark, forecasts=forecasts, max_leverage=max_leverage,
         )
         prices_bh = {s: per_instrument[s]["price"] for s in symbols}
         portfolio["bench_ret"] = utils.buy_and_hold_returns(prices_bh, weights)
@@ -222,6 +228,8 @@ def main():
                         help="Cash management: fixed / full / half compounding.")
     parser.add_argument("--compound_freq", choices=["daily", "weekly", "monthly"], default="monthly")
     parser.add_argument("--high_watermark", type=float, default=None, help="HWM del modo 'half'.")
+    parser.add_argument("--max_leverage", type=float, default=None,
+                        help="Tope de exposicion bruta como multiplo del capital (1.0 = sin margen).")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar graficos.")
@@ -248,6 +256,7 @@ def main():
         capital_mode=args.capital_mode,
         compound_freq=args.compound_freq,
         high_watermark=args.high_watermark,
+        max_leverage=args.max_leverage,
         start_date=args.start,
         end_date=args.end,
     )

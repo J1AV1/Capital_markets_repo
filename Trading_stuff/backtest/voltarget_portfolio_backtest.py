@@ -91,11 +91,15 @@ def run_voltarget_portfolio(
     capital_mode="fixed",
     compound_freq="monthly",
     high_watermark=None,
+    max_leverage=None,
     start_date=None,
     end_date=None,
 ):
     """
     Ejecuta el backtest VolTarget Portfolio sobre una lista de simbolos.
+
+    max_leverage: tope de exposicion bruta como multiplo del capital. None = sin
+                  tope (usa el apalancamiento natural del IDM). 1.0 = sin margen.
 
     weight_mode: 'erc' (equal risk contribution, default) | 'equal' (1/N).
     capital_mode: 'fixed' | 'full' | 'half' (cash management / compounding).
@@ -144,7 +148,10 @@ def run_voltarget_portfolio(
         idm = utils.compute_idm(sub_returns, weights)
 
     compound_info = None
-    if capital_mode != "fixed":
+    # El tope de apalancamiento se aplica correctamente (antes del buffer) dentro
+    # de simulate_capital, asi que si esta activo se usa esa ruta aunque el capital
+    # sea fijo (capital_mode="fixed" mantiene el notional constante = capital).
+    if capital_mode != "fixed" or max_leverage is not None:
         # --- Capital compuesto: simulacion forward del portafolio (Tactica 3) ---
         prices = {sym: base[sym]["price"] for sym in symbols}
         sigmas = {sym: base[sym]["sigma_annual"] for sym in symbols}
@@ -152,7 +159,7 @@ def run_voltarget_portfolio(
             prices, sigmas, weights, idm, target_risk, capital,
             buffer_frac=buffer_frac, round_positions=round_positions, multiplier=multiplier,
             capital_mode=capital_mode, compound_freq=compound_freq,
-            high_watermark=high_watermark,
+            high_watermark=high_watermark, max_leverage=max_leverage,
         )
         prices_bh = {sym: per_instrument[sym]["price"] for sym in symbols}
         portfolio["bench_ret"] = utils.buy_and_hold_returns(prices_bh, weights)
@@ -243,6 +250,8 @@ def main():
                         help="Frecuencia de actualización del capital compuesto.")
     parser.add_argument("--high_watermark", type=float, default=None,
                         help="High watermark del modo 'half' (default = capital inicial).")
+    parser.add_argument("--max_leverage", type=float, default=None,
+                        help="Tope de exposicion bruta como multiplo del capital (1.0 = sin margen). None = sin tope.")
     parser.add_argument("--start", default=None, help="Fecha inicio YYYY-MM-DD.")
     parser.add_argument("--end", default=None, help="Fecha fin YYYY-MM-DD.")
     parser.add_argument("--plot", action="store_true", help="Mostrar graficos.")
@@ -266,6 +275,7 @@ def main():
         capital_mode=args.capital_mode,
         compound_freq=args.compound_freq,
         high_watermark=args.high_watermark,
+        max_leverage=args.max_leverage,
         start_date=args.start,
         end_date=args.end,
     )

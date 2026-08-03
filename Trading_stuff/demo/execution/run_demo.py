@@ -83,9 +83,17 @@ def main():
     # 3. Broker + NAV
     broker = DemoBroker(readonly=False).connect()
     try:
-        if cfg.CAPITAL_SOURCE == "nav":
+        if cfg.CAPITAL_SOURCE == "nav_prev":
+            capital = broker.previous_day_nav()
+            if capital is None:                      # fallback si IBKR no lo entrega
+                capital = broker.net_liquidation()
+                _log("[WARN] sin PreviousDayEquity; uso NAV actual", lines)
+                _log(f"NAV cuenta demo ({broker.account}): {capital:,.2f}", lines)
+            else:
+                _log(f"Balance ayer al cierre ({broker.account}): {capital:,.2f}", lines)
+        elif cfg.CAPITAL_SOURCE == "nav":
             capital = broker.net_liquidation()
-            _log(f"NAV cuenta demo ({broker.account}): {capital:,.2f}", lines)
+            _log(f"NAV cuenta demo en vivo ({broker.account}): {capital:,.2f}", lines)
         else:
             capital = cfg.FIXED_CAPITAL
             _log(f"Capital fijo (config): {capital:,.2f}", lines)

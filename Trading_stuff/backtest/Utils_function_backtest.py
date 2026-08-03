@@ -127,7 +127,7 @@ def _period_key(d, freq):
 def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
                      buffer_frac=0.1, round_positions=False, multiplier=1.0,
                      capital_mode="full", compound_freq="monthly",
-                     high_watermark=None, forecasts=None):
+                     high_watermark=None, forecasts=None, max_leverage=None):
     """
     Simulacion forward con capital compuesto (Carver, Tactica 3: cash & compounding).
 
@@ -212,23 +212,41 @@ def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
                 notional = float(capital)
         prev_key = key
 
-        # Rebalanceo con banda de no-negociacion
+        # Pasada A: posicion optima (sin buffer) de cada instrumento.
+        opt_arr = np.full(m, np.nan)
         for j in range(m):
             p = P[t, j]
             sig = S[t, j]
             if np.isnan(p) or np.isnan(sig) or sig <= 0:
+                continue
+            o = notional * idm * w[j] * target_risk / (p * multiplier * sig)
+            if F is not None:                       # escalar por el forecast (Estrategia 9)
+                fc = F[t, j]
+                o = 0.0 if np.isnan(fc) else o * fc / 10.0
+            opt_arr[j] = o
+
+        # Tope de apalancamiento sobre el OPTIMO (antes del buffer), para no romper
+        # la banda de no-negociacion: exposicion bruta <= notional * max_leverage.
+        if max_leverage is not None:
+            gross = 0.0
+            for j in range(m):
+                if not np.isnan(opt_arr[j]):
+                    gross += abs(opt_arr[j]) * P[t, j] * multiplier
+            cap_gross = notional * max_leverage
+            if gross > cap_gross > 0:
+                lam = cap_gross / gross
+                opt_arr = opt_arr * lam
+
+        # Pasada B: banda de no-negociacion contra la posicion mantenida.
+        for j in range(m):
+            p = P[t, j]
+            if np.isnan(opt_arr[j]):
                 if not np.isnan(p):
                     prev_price[j] = p
                 continue
-            opt = notional * idm * w[j] * target_risk / (p * multiplier * sig)
-            if F is not None:                       # escalar por el forecast (Estrategia 9)
-                fc = F[t, j]
-                if np.isnan(fc):
-                    opt = 0.0
-                else:
-                    opt = opt * fc / 10.0
-            band = buffer_frac * abs(opt)
-            lower, upper = opt - band, opt + band
+            o = opt_arr[j]
+            band = buffer_frac * abs(o)
+            lower, upper = o - band, o + band
             if round_positions:
                 lower, upper = round(lower), round(upper)
             cur = held[j]

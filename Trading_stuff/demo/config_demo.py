@@ -50,9 +50,11 @@ LONG_WINDOW_YEARS = 10
 START_DATE = "2015-01-01"
 
 # --- Capital ---
-# "nav" = usar el NetLiquidation real de la cuenta demo (compounding natural).
-# "fixed" = usar FIXED_CAPITAL.
-CAPITAL_SOURCE = "nav"
+# "nav_prev" = balance al CIERRE DE AYER (PreviousDayEquityWithLoanValue de IBKR).
+#              Recomendado para una estrategia EOD: capital estable, sin ruido intradia.
+# "nav"      = NetLiquidation en vivo (intradia).
+# "fixed"    = usar FIXED_CAPITAL.
+CAPITAL_SOURCE = "nav_prev"
 FIXED_CAPITAL = 100_000.0
 
 # --- Rutas de estado / logs ---

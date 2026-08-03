@@ -60,6 +60,21 @@ class DemoBroker:
                 return float(v.value)
         raise RuntimeError("No se pudo leer NetLiquidation de la cuenta.")
 
+    def previous_day_nav(self):
+        """
+        Balance (equity) al cierre del dia anterior: PreviousDayEquityWithLoanValue
+        de IBKR (valorado a las 16:00 ET del dia previo). None si no esta disponible.
+        Para una cuenta de solo acciones sin prestamo equivale al NAV de ayer al cierre.
+        """
+        vals = self.ib.accountValues(self.account) if self.account else self.ib.accountValues()
+        for v in vals:
+            if v.tag == "PreviousDayEquityWithLoanValue" and v.currency in ("USD", "BASE"):
+                return float(v.value)
+        for v in vals:
+            if v.tag == "PreviousDayEquityWithLoanValue":
+                return float(v.value)
+        return None
+
     def positions(self):
         """dict {symbol: cantidad} de las posiciones actuales (acciones)."""
         out = {}
