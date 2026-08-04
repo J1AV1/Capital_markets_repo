@@ -65,14 +65,30 @@ class DemoBroker:
         Balance (equity) al cierre del dia anterior: PreviousDayEquityWithLoanValue
         de IBKR (valorado a las 16:00 ET del dia previo). None si no esta disponible.
         Para una cuenta de solo acciones sin prestamo equivale al NAV de ayer al cierre.
+
+        Este tag NO viene en accountValues(); se obtiene de accountSummary(), que
+        pide explicitamente ese set de tags. Se deja accountValues como fallback.
         """
+        tag = "PreviousDayEquityWithLoanValue"
+
+        # 1) accountSummary (fuente correcta para este tag)
+        try:
+            summ = self.ib.accountSummary(self.account) if self.account else self.ib.accountSummary()
+            for v in summ:
+                if v.tag == tag:
+                    val = float(v.value)
+                    if val > 0:
+                        return val
+        except Exception:
+            pass
+
+        # 2) fallback: accountValues
         vals = self.ib.accountValues(self.account) if self.account else self.ib.accountValues()
         for v in vals:
-            if v.tag == "PreviousDayEquityWithLoanValue" and v.currency in ("USD", "BASE"):
-                return float(v.value)
-        for v in vals:
-            if v.tag == "PreviousDayEquityWithLoanValue":
-                return float(v.value)
+            if v.tag == tag:
+                val = float(v.value)
+                if val > 0:
+                    return val
         return None
 
     def positions(self):

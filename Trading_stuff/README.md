@@ -59,8 +59,9 @@ python Trading_stuff/backtest/trend_multi_backtest.py --speeds 32 64 --no_round
 
 Flags comunes: `--capital`, `--target_risk`, `--no_round`, `--no_buffer`,
 `--buffer_frac`, `--weight_mode {erc,equal}`, `--capital_mode {fixed,full,half}`,
-`--compound_freq {daily,weekly,monthly}`, `--high_watermark`, `--start/--end`,
-`--plot`. En trend: `--speeds`, `--long_short`.
+`--compound_freq {daily,weekly,monthly}`, `--high_watermark`,
+`--max_leverage` (1.0 = sin margen), `--start/--end`, `--plot`.
+En trend: `--speeds`, `--long_short`.
 
 ## Ejecución demo (Estrategia VolTarget Portfolio)
 
@@ -82,7 +83,17 @@ se controla en `demo/config_demo.py`. Al pasar a **live** se copia la carpeta y 
 ajusta `config_live.py` (puerto 7496, `DRY_RUN=False`).
 
 ### Notas de ejecución (IBKR)
-- **Sin margen**: `MAX_LEVERAGE = 1.0` → la exposición bruta nunca supera el NAV.
+- **Sin margen**: `MAX_LEVERAGE = 1.0` → si el sizing por riesgo pide más, se escala
+  todo para que la exposición bruta no supere el NAV.
 - **Acciones enteras**: IBKR rechaza órdenes fraccionales por API (error 10243) → `ROUND_POSITIONS = True`.
-- **Capital**: `CAPITAL_SOURCE = "nav"` lee el NetLiquidation real de la cuenta (compounding natural).
+- **Capital = balance de AYER al cierre** (`CAPITAL_SOURCE = "nav_prev"`): se obtiene
+  vía **IBKR Flex Web Service** (`flex_nav.py`). **Sin fallbacks**: si el Flex no
+  devuelve NAV, la corrida **aborta con alerta** (no se opera sin capital confiable).
 - El `state/` y `logs/` de ejecución están en `.gitignore` (son runtime, no se versionan).
+
+### Configurar el Flex Web Service (para el NAV de cierre)
+1. En IBKR Account Management: genera un **Flex Web Service token** y una **Flex Query**
+   que incluya la sección de NAV / *Equity Summary in Base*; anota su **Query ID**.
+2. Copia `demo/execution/flex_credentials.example.json` a `flex_credentials.json`
+   (gitignoreado) y pon tu token y query id. Alternativa: variables de entorno
+   `IBKR_FLEX_TOKEN` / `IBKR_FLEX_QUERY_ID`.

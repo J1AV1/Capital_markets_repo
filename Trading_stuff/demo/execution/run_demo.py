@@ -84,13 +84,17 @@ def main():
     broker = DemoBroker(readonly=False).connect()
     try:
         if cfg.CAPITAL_SOURCE == "nav_prev":
-            capital = broker.previous_day_nav()
-            if capital is None:                      # fallback si IBKR no lo entrega
-                capital = broker.net_liquidation()
-                _log("[WARN] sin PreviousDayEquity; uso NAV actual", lines)
-                _log(f"NAV cuenta demo ({broker.account}): {capital:,.2f}", lines)
-            else:
-                _log(f"Balance ayer al cierre ({broker.account}): {capital:,.2f}", lines)
+            # Balance de cierre de ayer SOLO via Flex Web Service. Sin fallbacks:
+            # si no hay NAV, se aborta la corrida (no se opera sin capital confiable).
+            if not (cfg.FLEX_TOKEN and cfg.FLEX_QUERY_ID):
+                _log("[ALERTA] Flex Query no configurado (falta token/query id). Aborto: NO HAY NAV.", lines)
+                raise RuntimeError("Flex Query no configurado: no hay NAV, corrida abortada.")
+            from flex_nav import previous_day_nav_flex
+            capital = previous_day_nav_flex(account=broker.account)
+            if not capital or capital <= 0:
+                _log("[ALERTA] el Flex Query NO devolvio NAV. Aborto la corrida (sin NAV no se opera).", lines)
+                raise RuntimeError("Flex Query sin NAV: corrida abortada.")
+            _log(f"Balance ayer al cierre (Flex): {capital:,.2f}", lines)
         elif cfg.CAPITAL_SOURCE == "nav":
             capital = broker.net_liquidation()
             _log(f"NAV cuenta demo en vivo ({broker.account}): {capital:,.2f}", lines)
@@ -163,10 +167,10 @@ def main():
         _log(f"\nOrdenes generadas: {len(orders)} | estado -> {cfg.LAST_RUN_JSON}", lines)
     finally:
         broker.disconnect()
-
-    logfile = os.path.join(cfg.LOG_DIR, f"run_{dt.date.today():%Y%m%d}.log")
-    with open(logfile, "a", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+        # Escribir el log siempre, incluso si la corrida aborto (p.ej. sin NAV).
+        logfile = os.path.join(cfg.LOG_DIR, f"run_{dt.date.today():%Y%m%d}.log")
+        with open(logfile, "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
 
 
 if __name__ == "__main__":

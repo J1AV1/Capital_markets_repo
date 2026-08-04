@@ -57,6 +57,28 @@ START_DATE = "2015-01-01"
 CAPITAL_SOURCE = "nav_prev"
 FIXED_CAPITAL = 100_000.0
 
+# Flex Web Service para el NAV de cierre (PreviousDayEquity no siempre viene por API).
+# El token es SENSIBLE. Se lee de variable de entorno o del archivo gitignoreado
+# execution/flex_credentials.json (copia de flex_credentials.example.json).
+def _load_flex_creds():
+    import json
+    token = os.getenv("IBKR_FLEX_TOKEN")
+    query = os.getenv("IBKR_FLEX_QUERY_ID")
+    path = os.path.join(_HERE, "execution", "flex_credentials.json")
+    if (not token or not query) and os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            token = token or d.get("IBKR_FLEX_TOKEN")
+            query = query or d.get("IBKR_FLEX_QUERY_ID")
+        except Exception:
+            pass
+    # Ignorar valores vacios (archivo sin llenar).
+    return (token or None), (query or None)
+
+
+FLEX_TOKEN, FLEX_QUERY_ID = _load_flex_creds()
+
 # --- Rutas de estado / logs ---
 STATE_DIR = os.path.join(_HERE, "execution", "state")
 LOG_DIR = os.path.join(_HERE, "execution", "logs")

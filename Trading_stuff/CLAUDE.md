@@ -39,6 +39,10 @@ La inspiración de Carver se reconoce en docstrings, nada más.
 - **% returns son invariantes al compounding**; el compounding solo escala dólares.
   No esperes que el Sharpe cambie entre fixed/full/half.
 - El benchmark buy&hold usa **los mismos pesos** que la estrategia.
+- **`max_leverage`** (1.0 = sin margen) capea la exposición bruta. Se aplica al OPTIMO
+  **antes** del buffer (dentro de `simulate_capital`, dos pasadas) — nunca después,
+  o el reescalado diario rompe la banda y dispara miles de trades. Con `max_leverage`
+  activo, el backtest se enruta por `simulate_capital` aunque el capital sea fijo.
 
 ## Cómo correr (quirk de imports)
 Los módulos mezclan imports planos (`import Utils_function_backtest`, `import db`)
@@ -56,6 +60,14 @@ Silenciar `Error 162` de IBKR al hacer grep: son la señal de "no hay más histo
 - `signals_strat4.py` reutiliza `run_voltarget_portfolio` para los targets de hoy y
   aplica el **tope de apalancamiento** (`MAX_LEVERAGE=1.0`, sin margen).
 - IBKR **rechaza órdenes fraccionales por API** → `ROUND_POSITIONS=True` (enteras).
+- **Capital = balance de ayer al cierre** (`CAPITAL_SOURCE="nav_prev"`) vía **Flex Web
+  Service** (`flex_nav.py`, flujo SendRequest→GetStatement con polling). El campo
+  `PreviousDayEquityWithLoanValue` NO viene por `accountValues`/`accountSummary` fiable
+  → por eso Flex. **Sin fallbacks**: si Flex no da NAV, la corrida **aborta con alerta**.
+- **Credenciales Flex** (token sensible): env `IBKR_FLEX_TOKEN`/`IBKR_FLEX_QUERY_ID` o
+  `execution/flex_credentials.json` (**gitignoreado**). Nunca hardcodear en `config_demo.py`.
+- El **parser del Flex** (`_parse_nav` en `flex_nav.py`) es provisional: ajustar a las
+  secciones reales del XML de la query del usuario cuando esté disponible.
 
 ### ⚠️ Regla de seguridad (crítica)
 **Un agente NO debe ejecutar el envío de órdenes** (`run_demo.py --execute`), ni
