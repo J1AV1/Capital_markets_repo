@@ -33,7 +33,7 @@ MIN_ORDER_VALUE = 5.0        # ignorar ordenes cuyo valor sea menor a esto (ruid
 
 # --- Universo y parametros de la Estrategia 4 ---
 SYMBOLS = [
-    "AXP", "GOOG", "WMT", "XLB", "XLE", "XLI", "XLU", "XLV", "XLY",
+    "AXP", "GOOG", "WMT", "XLB", "XLI", "XLU", "XLV", "XLY",
     "XLC", "XLRE", "GLD", "SLV", "USO", "DBA",
 ]
 TARGET_RISK = 0.20           # riesgo objetivo anual
