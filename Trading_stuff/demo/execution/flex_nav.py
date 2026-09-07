@@ -116,6 +116,87 @@ def _parse_nav(xml, account=None):
     raise RuntimeError("No se encontro el NAV en el XML del Flex Query (revisar secciones).")
 
 
+def _norm_date(s):
+    """Normaliza fechas de Flex ('20260115', '20260115;120000', '2026-01-15') a 'YYYY-MM-DD'."""
+    if not s:
+        return None
+    s = str(s).split(";")[0].split(" ")[0].strip()
+    if "-" in s:
+        return s[:10]
+    if len(s) >= 8 and s[:8].isdigit():
+        return f"{s[:4]}-{s[4:6]}-{s[6:8]}"
+    return s
+
+
+def _parse_nav_series(xml, account=None):
+    """
+    Serie diaria de NAV de cierre desde EquitySummaryInBase (una fila por fecha).
+    Provisional: se ajusta al XML real de la query. Devuelve lista [(fecha_iso, nav)]
+    ordenada por fecha (puede quedar vacia si la seccion no esta en el reporte).
+    """
+    root = ET.fromstring(xml)
+
+    def _match_acct(el):
+        return account is None or el.get("accountId") in (None, account) or el.get("account") in (None, account)
+
+    by_date = {}
+    for tag in ("EquitySummaryInBase", "EquitySummaryByReportDateInBase"):
+        for el in root.iter(tag):
+            if not _match_acct(el):
+                continue
+            val = el.get("total") or el.get("cash")
+            date = _norm_date(el.get("reportDate") or el.get("date"))
+            if val and date:
+                by_date[date] = float(val)  # ultima gana si hay duplicados
+    return sorted(by_date.items())
+
+
+def _parse_cash_flows(xml, account=None):
+    """
+    Depositos/retiros desde CashTransaction (type que contiene 'deposit'/'withdraw').
+    Provisional: se ajusta al XML real. Convencion: deposito>0, retiro<0 (se respeta
+    el signo del 'amount' de IBKR). Devuelve lista [(fecha_iso, monto)].
+    """
+    root = ET.fromstring(xml)
+
+    def _match_acct(el):
+        return account is None or el.get("accountId") in (None, account) or el.get("account") in (None, account)
+
+    flows = []
+    for el in root.iter("CashTransaction"):
+        if not _match_acct(el):
+            continue
+        ttype = (el.get("type") or "").lower()
+        if "deposit" not in ttype and "withdraw" not in ttype:
+            continue
+        amt = el.get("amount")
+        date = _norm_date(el.get("dateTime") or el.get("settleDate") or el.get("reportDate") or el.get("date"))
+        if amt and date:
+            flows.append((date, float(amt)))
+    return sorted(flows)
+
+
+def flex_report(token=None, query_id=None, account=None):
+    """
+    Trae el reporte Flex UNA vez y devuelve todo lo necesario para el monitor:
+        {"nav_latest": float|None, "nav_series": [(fecha, nav)], "flows": [(fecha, monto)]}
+    Lanza excepcion si falla la descarga; secciones ausentes quedan vacias/None.
+    """
+    token, query_id = _get_credentials(token, query_id)
+    ref = request_report(token, query_id)
+    xml = fetch_report(token, ref)
+    series = _parse_nav_series(xml, account=account)
+    try:
+        nav_latest = _parse_nav(xml, account=account)
+    except Exception:
+        nav_latest = series[-1][1] if series else None
+    return {
+        "nav_latest": nav_latest,
+        "nav_series": series,
+        "flows": _parse_cash_flows(xml, account=account),
+    }
+
+
 def previous_day_nav_flex(token=None, query_id=None, account=None):
     """Devuelve el NAV de cierre del dia anterior via Flex Query. None si falla."""
     try:
@@ -131,3 +212,12 @@ def previous_day_nav_flex(token=None, query_id=None, account=None):
 if __name__ == "__main__":
     # Prueba rapida: python flex_nav.py  (con IBKR_FLEX_TOKEN / IBKR_FLEX_QUERY_ID)
     print("NAV cierre (Flex):", previous_day_nav_flex())
+    try:
+        rep = flex_report()
+        print(f"NAV series: {len(rep['nav_series'])} puntos "
+              f"({rep['nav_series'][0][0]} -> {rep['nav_series'][-1][0]})" if rep["nav_series"] else "NAV series: vacia")
+        print(f"Flujos (dep/ret): {len(rep['flows'])}")
+        for d, a in rep["flows"]:
+            print(f"    {d}: {a:+,.2f}")
+    except Exception as e:
+        print(f"flex_report error: {e}")

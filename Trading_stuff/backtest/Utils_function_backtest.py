@@ -651,6 +651,79 @@ def performance_stats(returns, capital=None):
     return stats
 
 
+def time_weighted_return(nav_series, flows=None, flow_timing="eod"):
+    """
+    Retorno TIME-WEIGHTED (encadena retornos diarios neteando aportes/retiros).
+    Es el retorno "del gestor": mide el desempeño de la estrategia ignorando el
+    timing de los aportes/retiros (equivale a asumir que no hubo aportes/retiros).
+
+    :param nav_series: pd.Series de NAV de cierre indexada por fecha.
+    :param flows: pd.Series {fecha: monto} con deposito>0 y retiro<0 (o None).
+    :param flow_timing: 'eod' asume el flujo al CIERRE del dia (post-NAV):
+                            r_t = (NAV_t - flujo_t) / NAV_{t-1} - 1
+                        'bod' asume el flujo al INICIO del dia:
+                            r_t = NAV_t / (NAV_{t-1} + flujo_t) - 1
+    :return: TWR acumulado del periodo, prod(1+r_t)-1. NaN si <2 puntos.
+    """
+    nav = pd.Series(nav_series).sort_index()
+    if len(nav) < 2:
+        return float("nan")
+    if flows is not None and len(flows):
+        f = pd.Series(flows).groupby(level=0).sum().reindex(nav.index).fillna(0.0)
+    else:
+        f = pd.Series(0.0, index=nav.index)
+    prev = nav.shift(1)
+    if flow_timing == "bod":
+        r = nav / (prev + f) - 1.0
+    else:  # eod (default)
+        r = (nav - f) / prev - 1.0
+    r = r.replace([np.inf, -np.inf], np.nan).dropna()
+    if len(r) == 0:
+        return float("nan")
+    return float((1.0 + r).prod() - 1.0)
+
+
+def xirr(cashflows, tol=1e-8, max_iter=200):
+    """
+    TIR con fechas reales = retorno MONEY-WEIGHTED anualizado. Tiene en cuenta el
+    monto y el timing de aportes y retiros (a diferencia del time-weighted).
+
+    Convencion de signos (flujos desde tu bolsillo):
+      - inversion inicial y depositos -> NEGATIVOS (dinero que pones).
+      - retiros y el NAV final         -> POSITIVOS (dinero que recibes/vale).
+
+    :param cashflows: lista de (fecha, monto).
+    :return: tasa anual (day-count ACT/365) por biseccion. NaN si no hay signos
+             mixtos o no converge.
+    """
+    cfs = sorted(cashflows, key=lambda x: pd.Timestamp(x[0]))
+    if len(cfs) < 2:
+        return float("nan")
+    t0 = pd.Timestamp(cfs[0][0])
+    times = [(pd.Timestamp(d) - t0).days / 365.0 for d, _ in cfs]
+    amts = [float(a) for _, a in cfs]
+    if not (min(amts) < 0 < max(amts)):
+        return float("nan")  # se necesitan flujos de signo mixto
+
+    def npv(rate):
+        return sum(a / (1.0 + rate) ** t for a, t in zip(amts, times))
+
+    lo, hi = -0.9999, 10.0
+    flo, fhi = npv(lo), npv(hi)
+    if flo * fhi > 0:
+        return float("nan")  # no hay raiz en el rango
+    for _ in range(max_iter):
+        mid = 0.5 * (lo + hi)
+        fm = npv(mid)
+        if abs(fm) < tol:
+            return float(mid)
+        if flo * fm < 0:
+            hi, fhi = mid, fm
+        else:
+            lo, flo = mid, fm
+    return float(0.5 * (lo + hi))
+
+
 # Comisiones IBKR - plan Fixed para acciones/ETFs de EE.UU.
 #   0.005 USD por accion, minimo 1.00 USD por orden, maximo 1% del valor.
 IBKR_PER_SHARE = 0.005
