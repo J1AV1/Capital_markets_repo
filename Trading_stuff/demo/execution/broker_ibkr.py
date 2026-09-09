@@ -132,6 +132,10 @@ class DemoBroker:
         contract = Stock(symbol, "SMART", "USD")
         self.ib.qualifyContracts(contract)
         order = MarketOrder(action, quantity)
+        # Con varias cuentas bajo el mismo login, la orden DEBE llevar la cuenta
+        # explicita o IBKR la rechaza por ambiguedad. Se toma la cuenta configurada.
+        if self.account:
+            order.account = self.account
         trade = self.ib.placeOrder(contract, order)
         self.ib.sleep(1.0)
         info["status"] = trade.orderStatus.status
