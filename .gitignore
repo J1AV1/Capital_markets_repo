@@ -8,10 +8,14 @@ __pycache__/
 # Libros / PDFs (derechos de autor, archivos grandes)
 *.pdf
 
-# Credenciales
+# Credenciales y ajustes locales sensibles (cuenta real, capital, tokens)
 token_store.json
 flex_credentials.json
+local_settings.json
 
-# Estado y logs de ejecucion (demo/live)
+# Estado y logs de ejecucion (demo/live) -> contienen NAV/capital/cuenta
 **/execution/state/
 **/execution/logs/
+# Belt-and-suspenders por si algun archivo con NAV/capital cae fuera de state/
+nav_history.csv
+last_run.json

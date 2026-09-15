@@ -1,0 +1,5 @@
+{
+  "_comment": "Copia este archivo como local_settings.json y pon tus valores. El real esta gitignoreado.",
+  "IB_ACCOUNT": "U1234567",
+  "FIXED_CAPITAL": 1000.0
+}

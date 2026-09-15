@@ -22,12 +22,31 @@ for _p in (REPO_ROOT, _BACKTEST_DIR, _DB_DIR):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
+
+# --- Ajustes locales sensibles (cuenta, capital) ---
+# Nunca se versionan: viven en execution/local_settings.json (gitignoreado) o en
+# variables de entorno. Asi la cuenta real y el capital no tocan git.
+def _load_local_settings():
+    import json
+    path = os.path.join(_HERE, "execution", "local_settings.json")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+
+_LOCAL = _load_local_settings()
+
 # --- Entorno / broker ---
 ENV = "live"                 # "demo" | "live"
 IB_HOST = "127.0.0.1"
 IB_PORT = 7496               # TWS paper = 7497 ; TWS live = 7496 ; Gateway = 4002/4001
 IB_CLIENT_ID = 61            # distinto del demo (51) para poder correr ambos sin colision de clientId
-IB_ACCOUNT = "U27774535"            # RELLENAR con el numero de cuenta REAL (ej. "U1234567"). None = primera que devuelva IBKR.
+# Cuenta REAL: desde env o local_settings.json (gitignoreado). None = primera que devuelva IBKR.
+IB_ACCOUNT = os.getenv("IB_ACCOUNT") or _LOCAL.get("IB_ACCOUNT") or None
 
 # --- Seguridad ---
 DRY_RUN = True               # True = imprime las ordenes, NO las envia. En LIVE cambiarlo a False lo hace el usuario.
@@ -59,7 +78,8 @@ START_DATE = "2015-01-01"
 # "nav"      = NetLiquidation en vivo (intradia).
 # "fixed"    = usar FIXED_CAPITAL.
 CAPITAL_SOURCE = "nav_prev"
-FIXED_CAPITAL = 1_000.0
+# Capital de respaldo (solo si CAPITAL_SOURCE="fixed"): desde env/local_settings.json.
+FIXED_CAPITAL = float(os.getenv("FIXED_CAPITAL") or _LOCAL.get("FIXED_CAPITAL") or 1_000.0)
 
 # Flex Web Service para el NAV de cierre (PreviousDayEquity no siempre viene por API).
 # El token es SENSIBLE. Se lee de variable de entorno o del archivo gitignoreado
