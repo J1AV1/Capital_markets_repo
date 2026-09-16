@@ -53,6 +53,7 @@ def compute_targets(capital):
             capital=capital, target_risk=cfg.TARGET_RISK, price=price,
             sigma_annual=sigma, multiplier=1.0, weight=weights[sym], idm=idm,
         )
+        opt_cont = n                      # optimo continuo (pre-redondeo), para el fix post-round
         band = cfg.BUFFER_FRAC * abs(n)
         lower, upper = n - band, n + band
         if cfg.ROUND_POSITIONS:
@@ -62,34 +63,60 @@ def compute_targets(capital):
             "price": price,
             "sigma_annual": sigma,
             "optimal": float(n),
+            "opt_cont": float(opt_cont),
             "lower": float(lower),
             "upper": float(upper),
         }
 
-    # --- Tope de apalancamiento (cuenta sin margen) ---
-    # Exposicion bruta objetivo = suma de |posicion| * precio. Si supera
-    # capital * MAX_LEVERAGE, se escalan todas las posiciones (y sus bandas)
-    # proporcionalmente para caber en el capital, preservando los pesos relativos.
-    gross = sum(abs(t["optimal"]) * t["price"] for t in targets.values())
+    # --- Tope de exposicion (cuenta sin margen) ---
+    # Exposicion bruta objetivo = suma de |posicion| * precio.
     max_gross = capital * cfg.MAX_LEVERAGE
-    scale = 1.0
-    if gross > max_gross and gross > 0:
-        scale = max_gross / gross
-        for t in targets.values():
-            t["optimal"] *= scale
-            band = cfg.BUFFER_FRAC * abs(t["optimal"])
-            t["lower"] = t["optimal"] - band
-            t["upper"] = t["optimal"] + band
-            if cfg.ROUND_POSITIONS:
-                t["optimal"] = round(t["optimal"])
-                t["lower"] = round(t["lower"])
-                t["upper"] = round(t["upper"])
+    gross_before = sum(abs(t["optimal"]) * t["price"] for t in targets.values())
 
+    # Opcion CAP_AFTER_ROUND (cuenta chica): al redondear a enteros el bruto se
+    # infla y puede superar el efectivo -> IBKR rechaza. Se enforca el tope sobre
+    # las posiciones YA REDONDEADAS, con un colchon de caja (CASH_BUFFER) para el
+    # drift de precio. Con enteras esto puede dejar en 0 los instrumentos mas caros.
+    # Con mas capital, poner CAP_AFTER_ROUND=False -> sizing usual (pre-redondeo).
+    cap_after_round = getattr(cfg, "CAP_AFTER_ROUND", False) and cfg.ROUND_POSITIONS
+    cash_buffer = getattr(cfg, "CASH_BUFFER", 1.0) if cap_after_round else 1.0
+
+    if cap_after_round:
+        eff_cap = max_gross * cash_buffer
+        scale = 1.0
+        for _ in range(30):
+            gross_r = sum(round(abs(t["opt_cont"]) * scale) * t["price"] for t in targets.values())
+            if gross_r <= eff_cap or gross_r == 0:
+                break
+            scale *= (eff_cap / gross_r) * 0.99
+        for t in targets.values():
+            o = round(t["opt_cont"] * scale)
+            band = cfg.BUFFER_FRAC * abs(o)
+            t["optimal"] = float(o)
+            t["lower"] = float(round(o - band))
+            t["upper"] = float(round(o + band))
+    else:
+        # Sizing usual: escalar el optimo para caber en el tope y (si aplica) redondear.
+        # El overshoot de redondeo es despreciable en cuentas grandes.
+        if gross_before > max_gross and gross_before > 0:
+            sc = max_gross / gross_before
+            for t in targets.values():
+                t["optimal"] *= sc
+                band = cfg.BUFFER_FRAC * abs(t["optimal"])
+                t["lower"] = t["optimal"] - band
+                t["upper"] = t["optimal"] + band
+                if cfg.ROUND_POSITIONS:
+                    t["optimal"] = round(t["optimal"])
+                    t["lower"] = round(t["lower"])
+                    t["upper"] = round(t["upper"])
+
+    gross_after = sum(abs(t["optimal"]) * t["price"] for t in targets.values())
     meta = {
         "weights": weights, "idm": idm,
-        "gross_before": gross, "gross_after": min(gross, max_gross),
-        "leverage_before": gross / capital if capital else 0.0,
-        "leverage_after": min(gross, max_gross) / capital if capital else 0.0,
-        "leverage_scale": scale,
+        "gross_before": gross_before, "gross_after": gross_after,
+        "leverage_before": gross_before / capital if capital else 0.0,
+        "leverage_after": gross_after / capital if capital else 0.0,
+        "leverage_scale": (gross_after / gross_before) if gross_before else 1.0,
+        "cap_after_round": cap_after_round, "cash_buffer": cash_buffer,
     }
     return targets, meta

@@ -63,6 +63,12 @@ MAX_LEVERAGE = 1.0
 WEIGHT_MODE = "erc"          # "erc" | "equal"
 BUFFER_FRAC = 0.10           # ancho de la banda de no-negociacion (fraccion de N)
 ROUND_POSITIONS = True       # IBKR NO acepta ordenes fraccionales por API (error 10243) -> enteras
+# Tope de exposicion post-redondeo (para CUENTA CHICA sin margen). Al redondear a
+# enteros el bruto se infla y puede superar el efectivo -> IBKR rechaza la orden.
+# True  = enforca el tope sobre las posiciones YA redondeadas + colchon CASH_BUFFER.
+# False = sizing usual (tope pre-redondeo); apto para capital grande (paper $1M).
+CAP_AFTER_ROUND = False
+CASH_BUFFER = 0.97           # tope efectivo = capital*MAX_LEVERAGE*CASH_BUFFER (colchon de caja)
 SPAN = 32                    # span del EWMA de volatilidad
 LONG_WINDOW_YEARS = 10
 # Historia minima para calentar la volatilidad; None = todo lo disponible en la BD.

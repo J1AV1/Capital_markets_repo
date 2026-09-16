@@ -92,6 +92,7 @@ def run_voltarget_portfolio(
     compound_freq="monthly",
     high_watermark=None,
     max_leverage=None,
+    cap_after_round=False,
     start_date=None,
     end_date=None,
 ):
@@ -160,6 +161,7 @@ def run_voltarget_portfolio(
             buffer_frac=buffer_frac, round_positions=round_positions, multiplier=multiplier,
             capital_mode=capital_mode, compound_freq=compound_freq,
             high_watermark=high_watermark, max_leverage=max_leverage,
+            cap_after_round=cap_after_round,
         )
         prices_bh = {sym: per_instrument[sym]["price"] for sym in symbols}
         portfolio["bench_ret"] = utils.buy_and_hold_returns(prices_bh, weights)

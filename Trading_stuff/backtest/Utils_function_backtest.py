@@ -127,7 +127,8 @@ def _period_key(d, freq):
 def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
                      buffer_frac=0.1, round_positions=False, multiplier=1.0,
                      capital_mode="full", compound_freq="monthly",
-                     high_watermark=None, forecasts=None, max_leverage=None):
+                     high_watermark=None, forecasts=None, max_leverage=None,
+                     cap_after_round=False):
     """
     Simulacion forward con capital compuesto (Carver, Tactica 3: cash & compounding).
 
@@ -236,6 +237,20 @@ def simulate_capital(prices, sigmas, weights, idm, target_risk, capital,
             if gross > cap_gross > 0:
                 lam = cap_gross / gross
                 opt_arr = opt_arr * lam
+
+            # Fix 1: cuando se opera en enteras, redondear re-infla el bruto por
+            # encima del tope. Se busca un factor extra para que el bruto de las
+            # posiciones REDONDEADAS quepa en notional*max_leverage (evita el rechazo
+            # por caja en vivo). Solo aplica si round_positions y cap_after_round.
+            if cap_after_round and round_positions and cap_gross > 0:
+                for _ in range(12):
+                    gross_r = 0.0
+                    for j in range(m):
+                        if not np.isnan(opt_arr[j]):
+                            gross_r += abs(round(opt_arr[j])) * P[t, j] * multiplier
+                    if gross_r <= cap_gross or gross_r == 0:
+                        break
+                    opt_arr = opt_arr * (cap_gross / gross_r) * 0.99
 
         # Pasada B: banda de no-negociacion contra la posicion mantenida.
         for j in range(m):
