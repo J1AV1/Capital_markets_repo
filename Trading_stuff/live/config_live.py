@@ -56,8 +56,12 @@ MIN_ORDER_VALUE = 5.0        # ignorar ordenes cuyo valor sea menor a esto (ruid
 
 # --- Universo y parametros de la Estrategia 4 ---
 SYMBOLS = [
+    # Live usa GLDM (precio bajo por accion, ~$75) en vez de GLD (~$392) para poder
+    # sostenerlo con acciones enteras en cuenta chica. Mismo subyacente (oro spot),
+    # retorno identico; su vol/peso se calcula con la historia de GLDM (desde 2018,
+    # de sobra caliente a 2026). Los BACKTESTS siguen usando GLD (historia larga).
     "AXP", "GOOG", "WMT", "XLB", "XLI", "XLU", "XLV", "XLY",
-    "XLC", "XLRE", "GLD", "SLV", "USO", "DBA",
+    "XLC", "XLRE", "GLDM", "SLV", "USO", "DBA",
 ]
 TARGET_RISK = 0.20           # riesgo objetivo anual
 # Tope de apalancamiento: exposicion bruta maxima como multiplo del NAV.
