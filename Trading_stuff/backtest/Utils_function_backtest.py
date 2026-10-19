@@ -3,7 +3,8 @@
 
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
+# matplotlib NO se importa aqui: no se usa en este modulo y cargarlo es lento.
+# Las funciones de grafico lo importan localmente (p.ej. en los *_backtest.py).
 
 BUSINESS_DAYS_PER_YEAR = 256
 ANNUALISATION = np.sqrt(BUSINESS_DAYS_PER_YEAR)  # = 16
