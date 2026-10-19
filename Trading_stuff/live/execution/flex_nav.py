@@ -63,17 +63,24 @@ def request_report(token, query_id):
     return ref
 
 
-def fetch_report(token, reference_code, retries=8, delay=3.0):
-    """Paso 2: obtiene el XML del reporte (hace polling mientras se genera)."""
+def fetch_report(token, reference_code, retries=20, delay=5.0):
+    """Paso 2: obtiene el XML del reporte (hace polling mientras se genera).
+
+    IBKR puede tardar en generar el reporte y, si se pide la misma query muy
+    seguido, throttlea devolviendo <Status>Warn</Status> un rato. Por eso el
+    polling es generoso (~retries*delay segundos).
+    """
     for _ in range(retries):
         xml = _http_get(GET_URL, {"t": token, "q": reference_code, "v": "3"})
-        stripped = xml.lstrip()
         # Mientras se genera, IBKR devuelve un <FlexStatementResponse> con status Warn.
         if "Statement generation in progress" in xml or "<Status>Warn</Status>" in xml:
             time.sleep(delay)
             continue
         return xml
-    raise RuntimeError("Flex GetStatement: el reporte no estuvo listo tras varios intentos.")
+    raise RuntimeError(
+        "Flex GetStatement: el reporte no estuvo listo tras varios intentos "
+        "(posible rate-limit de IBKR; espera unos minutos entre corridas)."
+    )
 
 
 def _parse_nav(xml, account=None):

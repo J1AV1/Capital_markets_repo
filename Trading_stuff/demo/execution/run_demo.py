@@ -158,7 +158,14 @@ def main():
         with open(cfg.LAST_RUN_JSON, "w", encoding="utf-8") as f:
             json.dump(state, f, indent=2, default=str)
 
-        nav_row = pd.DataFrame([{"date": dt.date.today().isoformat(), "nav": capital}])
+        # La fecha del NAV = el dia al que CORRESPONDE el dato, no el de la corrida.
+        # Con nav_prev el capital es el cierre del dia habil ANTERIOR, asi que se
+        # estampa con ese dia (no con hoy).
+        if cfg.CAPITAL_SOURCE == "nav_prev":
+            nav_date = (pd.Timestamp.now().normalize() - pd.offsets.BDay(1)).date().isoformat()
+        else:
+            nav_date = dt.date.today().isoformat()
+        nav_row = pd.DataFrame([{"date": nav_date, "nav": capital}])
         if os.path.exists(cfg.NAV_HISTORY_CSV):
             nav_row.to_csv(cfg.NAV_HISTORY_CSV, mode="a", header=False, index=False)
         else:
